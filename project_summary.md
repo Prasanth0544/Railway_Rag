@@ -64,16 +64,20 @@ railway-rag-assistant/
 ├── .gitignore                  # Git ignore file (excludes virtual environment and database)
 ├── requirements.txt            # Python dependencies (FastAPI, LangChain, ChromaDB, Pandas)
 ├── Readme.md                   # Setup instructions and user guide
-├── project_summary.md          # [THIS FILE] Project history and status summary
+├── project_summary.md          # [THIS FILE] Project summary
 ├── data/
 │   └── railway_rules.csv       # Hand-curated CSV of 183 railway rules
 ├── scripts/
 │   ├── preprocess.py           # Ingests, parses, and converts CSVs to LangChain Documents
 │   └── create_embeddings.py    # Generates Gemini embeddings and populates ChromaDB
-└── app/
-    ├── main.py                 # FastAPI application and endpoint definitions
-    ├── retriever.py            # Unified retriever querying across all collections
-    └── rag.py                  # LangChain RAG pipeline supporting cloud/local LLM execution
+├── app/
+│   ├── main.py                 # FastAPI application and endpoint definitions
+│   ├── retriever.py            # Unified retriever querying across all collections
+│   └── rag.py                  # LangChain RAG pipeline supporting cloud/local LLM execution
+└── web/
+    ├── index.html              # Main HTML markup with System Info & RAG Pipeline Flow
+    ├── styles.css              # Custom styling with dark mode, animations, and layouts
+    └── app.js                  # Frontend logic handling Fetch-based SSE streaming and rendering
 ```
 
 ### Script & Code Walkthrough:
@@ -84,7 +88,7 @@ railway-rag-assistant/
    * Standardizes text inputs into readable natural-language templates optimized for embedding search.
 
 2. **`scripts/create_embeddings.py`**
-   * Configures embeddings via **Google Generative AI** (`embedding-001`).
+   * Configures embeddings via **Google Generative AI** (`embedding-001`) or locally (`sentence-transformers/all-MiniLM-L6-v2`).
    * Iterates through documents in batches (respecting Gemini API rate limits) and saves vectors to a local persistent directory (`chroma_db/`).
    * Supports command-line switches like `--skip-routes`, `--rules-only`, or `--trains-only` to facilitate modular/fast rebuilding.
 
@@ -100,11 +104,20 @@ railway-rag-assistant/
 
 5. **`app/main.py`**
    * Implements a FastAPI application serving:
-     * `POST /ask` — Main query path executing the RAG pipeline.
+     * `POST /ask` — REST query path executing the RAG pipeline.
+     * `POST /ask/stream` — Real-time streaming RAG endpoint transmitting answer tokens via Server-Sent Events (SSE).
      * `GET /trains` & `GET /stations` — Paginated details directly from source datasets.
      * `GET /rules` — Lists ingested railway rules.
      * `GET /trains/{train_no}` & `GET /stations/{station_code}` — Specific key-based lookups.
-     * `GET /health` — Verifies API running state and list of loaded collections.
+     * `GET /health` — Verifies API running state, LLM details, and collection stats.
+
+6. **`web/` Front-End Web Client**
+   * **`index.html`**: A responsive, two-panel dashboard built on semantic HTML5. Includes an input text area, template question chips, sidebar system status monitor, and visual RAG flowchart.
+   * **`styles.css`**: Design tokens for custom themes (dark mode default, light mode togglable), animations (pulsing pipeline flows, loading typing bubbles), and clean key-value listings.
+   * **`app.js`**: Handles:
+     * System health check query on initialization to fill sidebar stats.
+     * Stream reader reading from `/ask/stream`.
+     * Real-time rendering of tokens, retrieved sources checklists with score filters, and RAG execution statistics.
 
 ---
 
@@ -125,6 +138,8 @@ The project is highly flexible, supporting two primary execution strategies conf
 - [x] **Data Pipelines**: Finished robust data cleaning scripts in `preprocess.py` targeting the 24k+ total source documents.
 - [x] **Core Backend & Chain**: Fully coded retriever system (`retriever.py`), RAG generation loop (`rag.py`), and FastAPI routes (`main.py`).
 - [x] **Local Test Validation**: Syntactical analysis verified for all python modules.
-- [/] **Dependency Installation**: Ready.
-- [ ] **Vector Database Creation**: Running `create_embeddings.py` once API key configuration is supplied.
-- [ ] **FastAPI Server Launch**: Ready to host locally.
+- [x] **Dependency Installation**: Completed successfully.
+- [x] **Vector Database Creation**: Vector embeddings generated for rules, trains, stations, and routes in local ChromaDB.
+- [x] **FastAPI Server Launch**: Back-end running on `http://localhost:8000` supporting Server-Sent Events (SSE).
+- [x] **Responsive Web Dashboard**: Frontend UI integrated with streaming answers, dynamic system settings card, checklist sources, and visual pipeline flow.
+

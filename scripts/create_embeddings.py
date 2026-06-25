@@ -174,9 +174,10 @@ def create_collection(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Railway RAG — Embedding Pipeline")
-    parser.add_argument("--skip-routes", action="store_true", help="Skip train route documents (faster)")
-    parser.add_argument("--rules-only",  action="store_true", help="Only embed railway_rules collection")
-    parser.add_argument("--trains-only", action="store_true", help="Only embed trains + stations")
+    parser.add_argument("--skip-routes",  action="store_true", help="Skip train route documents (faster)")
+    parser.add_argument("--rules-only",   action="store_true", help="Only embed railway_rules collection")
+    parser.add_argument("--trains-only",  action="store_true", help="Only embed trains + stations")
+    parser.add_argument("--routes-only",  action="store_true", help="Only embed train_routes collection")
     args = parser.parse_args()
 
     print("Railway RAG Assistant — Embedding Pipeline")
@@ -208,6 +209,9 @@ def main() -> None:
         create_collection(client, embeddings, "trains",   load_train_documents())
         create_collection(client, embeddings, "stations", load_station_documents())
 
+    elif args.routes_only:
+        create_collection(client, embeddings, "train_routes", load_train_route_documents(max_trains=None))
+
     else:
         create_collection(client, embeddings, "railway_rules", load_rules_documents())
         create_collection(client, embeddings, "trains",        load_train_documents())
@@ -215,7 +219,7 @@ def main() -> None:
         create_collection(client, embeddings, "references",    load_reference_documents())
 
         if not args.skip_routes:
-            create_collection(client, embeddings, "train_routes", load_train_route_documents(max_trains=5000))
+            create_collection(client, embeddings, "train_routes", load_train_route_documents(max_trains=None))
         else:
             print("\n[SKIP] Skipping train routes (--skip-routes)")
 

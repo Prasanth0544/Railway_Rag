@@ -23,3 +23,7 @@ build/
 # OS
 Thumbs.db
 .DS_Store
+
+# md files
+COMMANDS.md
+project_summary.md

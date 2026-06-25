@@ -56,12 +56,22 @@ class AnswerResponse(BaseModel):
     answer: str
     sources: list[SourceInfo]
     num_documents_retrieved: int
+    response_time_ms: float = 0.0
+    avg_relevance_score: float = 0.0
+    llm_model: str = ""
+    embedding_model: str = "all-MiniLM-L6-v2"
 
 
 class HealthResponse(BaseModel):
     status: str
     message: str
     version: str
+    llm_provider: str = ""
+    llm_model: str = ""
+    embedding_model: str = "all-MiniLM-L6-v2"
+    vector_db: str = "ChromaDB"
+    total_documents: int = 0
+    collections: dict = {}
 
 
 # --- App Lifecycle ---
@@ -188,13 +198,95 @@ async def ask_question(request: QuestionRequest):
         )
 
     try:
+        import time
+        t0 = time.time()
         result = rag_chain.invoke(request.question)
-        return AnswerResponse(**result)
+        elapsed_ms = round((time.time() - t0) * 1000, 1)
+
+        # Compute avg relevance score from sources
+        scores = [s["relevance_score"] for s in result.get("sources", []) if isinstance(s.get("relevance_score"), (int, float))]
+        avg_score = round(sum(scores) / len(scores), 4) if scores else 0.0
+
+        return AnswerResponse(
+            **result,
+            response_time_ms=elapsed_ms,
+            avg_relevance_score=avg_score,
+            llm_model=os.getenv("LOCAL_MODEL_NAME", "gemini-1.5-flash"),
+            embedding_model="all-MiniLM-L6-v2",
+        )
     except Exception as e:
         raise HTTPException(
             status_code=500,
             detail=f"Error processing question: {str(e)}",
         )
+
+
+@app.post("/ask/stream", tags=["RAG"])
+async def ask_question_stream(request: QuestionRequest):
+    """
+    Streaming RAG endpoint — returns answer token-by-token via Server-Sent Events.
+    Connect with EventSource in the browser for real-time word-by-word output.
+    """
+    from fastapi.responses import StreamingResponse
+    import json, time
+
+    if rag_chain is None:
+        raise HTTPException(status_code=503, detail="RAG chain not initialized.")
+
+    async def event_stream():
+        try:
+            t0 = time.time()
+
+            # Step 1: Retrieve docs
+            docs = rag_chain.retriever.retrieve(request.question)
+
+            # Send sources immediately (before LLM starts)
+            from app.rag import get_sources, format_docs
+            sources = get_sources(docs)
+            scores  = [s["relevance_score"] for s in sources if isinstance(s.get("relevance_score"), (int, float))]
+            avg_score = round(sum(scores) / len(scores), 4) if scores else 0.0
+
+            meta = {
+                "type": "meta",
+                "num_documents_retrieved": len(docs),
+                "avg_relevance_score": avg_score,
+                "sources": sources,
+                "llm_model": os.getenv("LOCAL_MODEL_NAME", "gemini-1.5-flash"),
+                "embedding_model": "all-MiniLM-L6-v2",
+            }
+            yield f"data: {json.dumps(meta)}\n\n"
+
+            # Step 2: Stream LLM tokens
+            from app.rag import SYSTEM_PROMPT, HUMAN_PROMPT
+            from langchain_core.prompts import ChatPromptTemplate
+            context = format_docs(docs)
+            prompt  = ChatPromptTemplate.from_messages([
+                ("system", SYSTEM_PROMPT),
+                ("human",  HUMAN_PROMPT),
+            ])
+            chain = prompt | rag_chain.llm
+
+            full_answer = ""
+            async for chunk in chain.astream({"context": context, "question": request.question}):
+                token = chunk.content if hasattr(chunk, "content") else str(chunk)
+                full_answer += token
+                yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
+
+            # Step 3: Send done event
+            elapsed_ms = round((time.time() - t0) * 1000, 1)
+            yield f"data: {json.dumps({'type': 'done', 'response_time_ms': elapsed_ms})}\n\n"
+
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/trains", tags=["Data"])
@@ -273,18 +365,35 @@ async def get_station(station_code: str):
 
 @app.get("/health", response_model=HealthResponse, tags=["Health"])
 async def health_check():
-    """Detailed health check — shows LLM provider and collection status."""
-    # pyrefly: ignore [missing-import]
+    """Detailed health check — shows LLM provider, model info, and collection stats."""
     import chromadb
     chroma_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "chroma_db")
-    collections = []
+    collections_detail = {}
+    total_docs = 0
+
     if os.path.exists(chroma_dir):
         try:
             client = chromadb.PersistentClient(path=chroma_dir)
-            collections = [f"{c.name} ({client.get_collection(c.name).count()} docs)" for c in client.list_collections()]
+            for c in client.list_collections():
+                count = client.get_collection(c.name).count()
+                collections_detail[c.name] = count
+                total_docs += count
         except Exception:
             pass
 
-    provider = os.getenv("LLM_PROVIDER", "gemini")
-    status_msg = f"LLM: {provider.upper()} | ChromaDB collections: {collections or 'none — run create_embeddings.py'}"
-    return HealthResponse(status="ok", message=status_msg, version="1.0.0")
+    provider   = os.getenv("LLM_PROVIDER", "gemini")
+    llm_model  = os.getenv("LOCAL_MODEL_NAME", "gemini-1.5-flash") if provider == "lmstudio" else os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+    col_summary = [f"{k} ({v} docs)" for k, v in collections_detail.items()]
+    status_msg  = f"LLM: {provider.upper()} | ChromaDB collections: {col_summary or 'none — run create_embeddings.py'}"
+
+    return HealthResponse(
+        status="ok",
+        message=status_msg,
+        version="1.0.0",
+        llm_provider=provider.upper(),
+        llm_model=llm_model,
+        embedding_model="all-MiniLM-L6-v2 (sentence-transformers)",
+        vector_db="ChromaDB",
+        total_documents=total_docs,
+        collections=collections_detail,
+    )

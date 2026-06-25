@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="AI-powered Indian Railways assistant — ask about trains, routes, stations, and rules.">
+    <title>Railway RAG Assistant — Indian Railways AI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+
+      <!-- ── SIDEBAR ─────────────────────────────────── -->
+      <aside class="sidebar" aria-label="Railway assistant sidebar">
+
+        <div class="brand">
+          <div class="brand-icon" aria-hidden="true">
+            <svg viewBox="0 0 32 32" fill="none">
+              <rect x="4" y="8" width="24" height="16" rx="4" stroke="currentColor" stroke-width="2.5"/>
+              <circle cx="10" cy="26" r="2.5" fill="currentColor"/>
+              <circle cx="22" cy="26" r="2.5" fill="currentColor"/>
+              <line x1="4" y1="16" x2="28" y2="16" stroke="currentColor" stroke-width="2"/>
+              <line x1="16" y1="8" x2="16" y2="16" stroke="currentColor" stroke-width="2"/>
+            </svg>
+          </div>
+          <div>
+            <div class="brand-label">Indian Railways AI</div>
+            <div class="brand-title">Railway RAG</div>
+          </div>
+        </div>
+
+        <!-- DB stats -->
+        <div class="stats-card" id="dbStats">
+          <div class="stats-title">Knowledge Base</div>
+          <div class="stats-grid">
+            <div class="stat-item">
+              <span class="stat-num" id="statTrains">12,813</span>
+              <span class="stat-label">Trains</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-num" id="statStations">11,354</span>
+              <span class="stat-label">Stations</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-num" id="statRoutes">10,158</span>
+              <span class="stat-label">Routes</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-num" id="statRules">183</span>
+              <span class="stat-label">Rules</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- System Information -->
+        <div class="stats-card" id="systemInfoCard">
+          <div class="stats-title">System Information</div>
+          <div class="system-info-grid">
+            <div class="sys-item">
+              <span class="sys-label">LLM Engine</span>
+              <span class="sys-val" id="sysLLM">Gemini 1.5 Flash</span>
+            </div>
+            <div class="sys-item">
+              <span class="sys-label">Embeddings</span>
+              <span class="sys-val" id="sysEmbed">all-MiniLM-L6-v2</span>
+            </div>
+            <div class="sys-item">
+              <span class="sys-label">Vector DB</span>
+              <span class="sys-val" id="sysVector">ChromaDB</span>
+            </div>
+            <div class="sys-item">
+              <span class="sys-label">Total Docs</span>
+              <span class="sys-val" id="sysDocs">34,508</span>
+            </div>
+            <div class="sys-item">
+              <span class="sys-label">Backend</span>
+              <span class="sys-val" id="sysBackend">FastAPI (Python)</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- RAG Pipeline Flow -->
+        <div class="stats-card" id="pipelineCard">
+          <div class="stats-title">RAG Pipeline Flow</div>
+          <div class="pipeline-flow">
+            <div class="flow-step">
+              <div class="flow-badge">User Question</div>
+            </div>
+            <div class="flow-arrow">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>
+            </div>
+            <div class="flow-step">
+              <div class="flow-badge">Unified Retriever</div>
+              <div class="flow-sub">ChromaDB Vector Store</div>
+            </div>
+            <div class="flow-arrow">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>
+            </div>
+            <div class="flow-step">
+              <div class="flow-badge">Prompt Builder</div>
+              <div class="flow-sub">Context Injected Prompt</div>
+            </div>
+            <div class="flow-arrow">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>
+            </div>
+            <div class="flow-step highlight">
+              <div class="flow-badge llm-badge" id="flowLLM">Gemini 1.5 Flash</div>
+              <div class="flow-sub">LLM Inference Engine</div>
+            </div>
+            <div class="flow-arrow">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>
+            </div>
+            <div class="flow-step success">
+              <div class="flow-badge answer-badge">RAG Response</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- API status -->
+        <div class="status-card" aria-live="polite">
+          <div class="status-header">
+            <span class="status-dot" id="statusDot"></span>
+            <span class="status-label" id="statusLabel">Connecting…</span>
+          </div>
+          <p class="status-msg" id="statusMessage">Checking API health</p>
+        </div>
+
+        <!-- API URL -->
+        <div class="api-card">
+          <label class="field-label" for="apiBase">API Endpoint</label>
+          <div class="api-row">
+            <input id="apiBase" type="url" value="http://localhost:8000" spellcheck="false" autocomplete="off">
+            <button class="refresh-btn" id="refreshHealth" type="button" title="Refresh" aria-label="Refresh API status">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 12a9 9 0 0 1 15-6.7L21 8M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16M3 21v-5h5"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- Theme toggle -->
+        <button class="theme-btn" id="themeToggle" type="button" aria-label="Toggle dark/light mode">
+          <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+          <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          <span>Toggle theme</span>
+        </button>
+
+      </aside>
+
+      <!-- ── MAIN PANEL ──────────────────────────────── -->
+      <main class="main-panel">
+
+        <!-- Header -->
+        <header class="main-header">
+          <div>
+            <p class="header-eyebrow">Ask about trains, routes, stations &amp; rules</p>
+            <h1 class="header-title">Railway Assistant</h1>
+          </div>
+          <button id="clearChat" class="clear-btn" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+            Clear
+          </button>
+        </header>
+
+        <!-- Example chips -->
+        <section class="chips-row" aria-label="Example questions">
+          <button class="chip" type="button" data-question="Which trains run between Vijayawada and Hyderabad?">Vijayawada → Hyderabad</button>
+          <button class="chip" type="button" data-question="What stations does train 12727 stop at?">Stops of train 12727</button>
+          <button class="chip" type="button" data-question="What is the complete route of train 16317?">Route of 16317</button>
+          <button class="chip" type="button" data-question="What are the ticket cancellation charges?">Cancellation charges</button>
+          <button class="chip" type="button" data-question="What is the luggage allowance for Sleeper class?">Sleeper luggage limit</button>
+          <button class="chip" type="button" data-question="Which trains pass through Rajahmundry?">Trains via RJY</button>
+          <button class="chip" type="button" data-question="Tell me about Vijayawada Junction station">Vijayawada station</button>
+          <button class="chip" type="button" data-question="What are the TTE responsibilities?">TTE duties</button>
+        </section>
+
+        <!-- Chat history -->
+        <section class="chat-area" id="chatArea" aria-live="polite" aria-label="Chat answers">
+          <div class="empty-state" id="emptyState">
+            <div class="empty-icon" aria-hidden="true">
+              <svg viewBox="0 0 64 64" fill="none">
+                <rect x="8" y="16" width="48" height="32" rx="8" stroke="currentColor" stroke-width="3"/>
+                <circle cx="20" cy="52" r="5" fill="currentColor" opacity="0.5"/>
+                <circle cx="44" cy="52" r="5" fill="currentColor" opacity="0.5"/>
+                <line x1="8" y1="32" x2="56" y2="32" stroke="currentColor" stroke-width="2.5"/>
+                <line x1="32" y1="16" x2="32" y2="32" stroke="currentColor" stroke-width="2.5"/>
+              </svg>
+            </div>
+            <h2>Ask me anything about Indian Railways</h2>
+            <p>I can look up train schedules, routes, station info, cancellation policies, luggage rules, and much more — across 34,000+ indexed documents.</p>
+          </div>
+        </section>
+
+        <!-- Ask form -->
+        <form class="ask-form" id="askForm">
+          <textarea
+            id="questionInput"
+            name="question"
+            rows="2"
+            maxlength="500"
+            placeholder="Ask about train 12727, cancellation rules, Vijayawada station…"
+            required
+            aria-label="Your question"
+          ></textarea>
+          <div class="form-footer">
+            <span class="char-count" id="charCount">0 / 500</span>
+            <div class="form-actions">
+              <kbd class="shortcut-hint">Ctrl + Enter</kbd>
+              <button id="submitQuestion" type="submit" class="ask-btn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="18" height="18"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                Ask
+              </button>
+            </div>
+          </div>
+        </form>
+
+      </main>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

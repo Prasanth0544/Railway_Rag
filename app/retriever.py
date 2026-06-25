@@ -128,35 +128,47 @@ class UnifiedRetriever:
     def _lookup_by_train_number(self, query: str) -> list[Document]:
         """
         If the query contains a 5-digit train number (e.g. 12727),
-        do a direct ChromaDB metadata lookup and return the exact match.
+        do a direct ChromaDB metadata lookup in both 'trains' and
+        'train_routes' collections and return exact matches.
         This bypasses semantic search for precise train number queries.
         """
-        if "trains" not in self.vector_stores:
-            return []
-
         numbers = re.findall(r"\b(\d{5})\b", query)
         if not numbers:
             return []
 
         exact_docs: list[Document] = []
-        trains_col = self.client.get_collection("trains")
 
-        for num in numbers:
+        # Collections to search for exact train number matches
+        lookup_collections = [
+            ("trains",       "trains",       1.0),
+            ("train_routes", "train_routes", 1.0),
+        ]
+
+        for col_name, label, score in lookup_collections:
+            if col_name not in self.vector_stores:
+                continue
             try:
-                result = trains_col.get(
-                    where={"train_no": num},
-                    limit=1,
-                    include=["documents", "metadatas"],
-                )
-                if result["documents"]:
-                    doc = Document(
-                        page_content=result["documents"][0],
-                        metadata={**result["metadatas"][0], "collection": "trains", "relevance_score": 1.0},
+                col = self.client.get_collection(col_name)
+            except Exception:
+                continue
+
+            for num in numbers:
+                try:
+                    result = col.get(
+                        where={"train_no": num},
+                        limit=1,
+                        include=["documents", "metadatas"],
                     )
-                    exact_docs.append(doc)
-                    print(f"[EXACT] Found train {num}: {result['metadatas'][0].get('train_name', '')}")
-            except Exception as exc:
-                print(f"[WARN] Train number lookup failed for {num}: {exc}")
+                    if result["documents"]:
+                        doc = Document(
+                            page_content=result["documents"][0],
+                            metadata={**result["metadatas"][0], "collection": label, "relevance_score": score},
+                        )
+                        exact_docs.append(doc)
+                        train_name = result["metadatas"][0].get("train_name", "")
+                        print(f"[EXACT] {label}: train {num} — {train_name}")
+                except Exception as exc:
+                    print(f"[WARN] Lookup failed in '{col_name}' for train {num}: {exc}")
 
         return exact_docs
 

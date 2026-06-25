@@ -94,23 +94,49 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 4. Configure API Key
+### 4. Configure API Key & Mode
 Get a free Gemini API key at [aistudio.google.com](https://aistudio.google.com), then update `.env`:
 ```env
 GOOGLE_API_KEY=your-actual-api-key-here
+LLM_PROVIDER=gemini # or "lmstudio" for local execution
 ```
 
 ### 5. Create Embeddings
 ```bash
 python scripts/create_embeddings.py
 ```
-This will generate embeddings for all 3 datasets and store them in `chroma_db/`.
+This will process all datasets (trains, stations, routes, rules) and create vector collections in `chroma_db/`.
 
-### 6. Start the Server
+### 6. Start the Backend API Server
 ```bash
 uvicorn app.main:app --reload
 ```
-Server runs at **http://localhost:8000**
+The FastAPI backend server will start running at **http://localhost:8000** with interactive Swagger documentation at **http://localhost:8000/docs**.
+
+### 7. Run the Web UI Client
+You can launch the web client dashboard in two ways:
+* **Option A: Direct Open**
+  Simply double-click [web/index.html](file:///c:/Users/prasa/projects/Railway RAG Assistant/web/index.html) in your File Explorer, or run in terminal:
+  ```powershell
+  Start-Process "web/index.html"
+  ```
+* **Option B: Local HTTP Server (Avoids CORS)**
+  Start a simple Python HTTP server from the project directory:
+  ```bash
+  python -m http.server 3000 --directory web
+  ```
+  Then navigate to **http://localhost:3000** in your browser.
+
+---
+
+## 🌐 Web UI Features
+
+Our custom design-system web client is packed with features for demonstration to recruiters:
+1. **SSE Streaming Answers**: Streams answer generation token-by-token in real-time.
+2. **Dynamic System Information**: Reads backend configurations on load from `/health` to print active model provider, embedding model, vector DB, and total database size in the sidebar.
+3. **Interactive RAG Pipeline Flow**: Animated step-by-step flowchart highlighting how query details progress through ChromaDB, Prompt, and LLM to form responses.
+4. **Detailed Retrieved Sources Checklist**: Lists source documents with ticks, type badges (Train, Route, Station, Rule), and raw similarity scores.
+5. **RAG Statistics Strip**: Displays statistics like Retrieved Doc Count, Average Score, Response Time in seconds, LLM Engine, and Embeddings.
 
 ---
 
@@ -119,9 +145,11 @@ Server runs at **http://localhost:8000**
 | Method | Route | Description |
 |--------|-------|-------------|
 | `GET` | `/` | Health check |
-| `POST` | `/ask` | **Main RAG query endpoint** |
-| `GET` | `/trains` | List all trains |
-| `GET` | `/stations` | List all stations |
+| `POST` | `/ask` | Main standard RAG query endpoint |
+| `POST` | `/ask/stream` | **Real-time Server-Sent Events (SSE) streaming endpoint** |
+| `GET` | `/health` | In-depth system health metrics & collection stats |
+| `GET` | `/trains` | List all trains in dataset |
+| `GET` | `/stations` | List all stations in dataset |
 | `GET` | `/rules` | List all railway rules |
 | `GET` | `/trains/{train_no}` | Get specific train details |
 | `GET` | `/stations/{station_code}` | Get specific station details |
