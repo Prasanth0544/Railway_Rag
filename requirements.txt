@@ -1,0 +1,25 @@
+# Railway RAG Assistant — Python Dependencies
+
+# ── Web Framework ──────────────────────────────────────
+fastapi
+uvicorn[standard]
+
+# ── LangChain Core ────────────────────────────────────
+langchain
+langchain-core
+langchain-community
+
+# ── LLM Providers ─────────────────────────────────────
+langchain-google-genai          # Gemini API (cloud LLM + embeddings)
+langchain-openai                # OpenAI-compatible (for LM Studio local server)
+
+# ── Vector Store ──────────────────────────────────────
+langchain-chroma
+chromadb
+
+# ── Data Processing ───────────────────────────────────
+pandas
+python-dotenv
+
+# ── Optional: Offline/Local Embeddings (LM Studio mode)
+sentence-transformers         # For USE_LOCAL_EMBEDDINGS=true (offline, no rate limits)
