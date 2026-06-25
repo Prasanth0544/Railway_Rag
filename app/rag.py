@@ -75,7 +75,7 @@ def get_llm():
     else:  # Default: Gemini
         from langchain_google_genai import ChatGoogleGenerativeAI
         api_key    = os.getenv("GOOGLE_API_KEY", "")
-        model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+        model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
         print(f"☁️  LLM: Google Gemini ({model_name})")
         return ChatGoogleGenerativeAI(

@@ -45,14 +45,28 @@ Rather than fine-tuning a model, this RAG approach extracts relevant context fro
 
 ## 📊 Dataset Ingestion & Preprocessing
 
-The system processes large datasets exported from MongoDB (erail APK format) along with reference railway rules.
+The system processes large datasets exported from MongoDB (erail APK format) along with reference railway rules. A key innovation is the **cross-dataset station lookup table** that links all station datasets by `station_code` before embedding.
+
+### Station Linking Pipeline (NEW)
+
+Before any embedding, `preprocess.py` calls `build_station_lookup()` which merges three datasets:
+
+| Dataset | Records | Role |
+|---|---|---|
+| `station_info.csv` | 9,956 | Canonical names, GPS coords, WiFi |
+| `station_zones.csv` | 10,760 | Railway zone per station (NR, SCR, SR, etc.) |
+| `station_aka_info.csv` | 775 | Alternate names (e.g. "Bezawada" → BZA, "Madras Central" → MAS) |
+
+The resulting lookup is **shared as a singleton** by both the station document builder and the route document builder.
 
 ### Data Ingestion Statistics:
+
 * **Railway Rules (`data/railway_rules.csv`)**: **183** rule documents covering booking rules (Tatkal, quotas), cancellation charges, luggage allowances, penalties, concessions, and department responsibilities.
-* **Train Information (`train_info.csv`)**: **12,813** train documents processed containing train numbers, names, types, sources/destinations, duration, operating days, and stops.
-* **Station Information (`station_info.csv`)**: **11,354** station documents, enriched with regional railway zones by merging `station_zones.csv`, and including coordinates, cities, and WiFi availability.
-* **Train Routes (`train_route_decoded.csv`)**: Routes parsed from nested JSON arrays detailing station stop sequences, arrival/departure schedules, and cumulative distance.
-* **Reference Data**: Ticket classes (`ticket_classes.csv`) and service taxes (`service_tax.csv`).
+* **Train Information (`train_info.csv`)**: **12,813** train documents containing train numbers, names, types, sources/destinations, duration, operating days, speed type and zone.
+* **Station Documents (linked)**: **9,956** station documents — each embeds canonical name, city, railway zone (with full zone name), GPS coordinates, WiFi status, and **all alternate names (AKAs)** so name-based queries resolve correctly (e.g. "Tirupathi" matches TPTY).
+* **Train Routes (`train_route_decoded.csv`)**: **10,158** route documents — each embeds the **full station name sequence** (not just codes) and a **per-stop schedule** with arrival time, departure time, halt duration, and cumulative distance. This enables queries like "What time does 17225 stop at Bhimavaram?".
+* **Reference Data**: Ticket classes (`ticket_classes.csv`) and service taxes (`service_tax.csv`) — 90 reference documents.
+
 
 ---
 
