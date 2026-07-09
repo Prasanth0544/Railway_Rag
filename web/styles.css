@@ -742,6 +742,132 @@ textarea::placeholder { color: var(--ink3); }
 .ask-btn:active { transform: translateY(0); }
 .ask-btn:disabled { opacity: 0.5; cursor: progress; transform: none; }
 
+/* Voice input button */
+.voice-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 16px;
+  border-radius: 10px;
+  background: var(--bg3);
+  border: 1px solid var(--border2);
+  color: var(--ink2);
+  font-weight: 600;
+  font-size: 0.85rem;
+  transition: background var(--t), color var(--t), border-color var(--t), box-shadow var(--t);
+}
+
+.voice-btn:hover {
+  background: var(--bg2);
+  color: var(--ink);
+  border-color: var(--ink3);
+}
+
+.voice-btn.recording {
+  background: rgba(232, 64, 42, 0.12);
+  color: var(--rail);
+  border-color: var(--rail);
+  box-shadow: 0 0 0 3px var(--rail-dim);
+  animation: voicePulse 1.2s ease-in-out infinite;
+}
+
+.voice-btn.recording .voice-label { display: none; }
+.voice-btn.recording::after {
+  content: 'Stop';
+  font-weight: 700;
+}
+
+.voice-btn.unsupported {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+@keyframes voicePulse {
+  0%, 100% { box-shadow: 0 0 0 3px var(--rail-dim); }
+  50%      { box-shadow: 0 0 0 6px var(--rail-dim), 0 0 20px var(--rail-glow); }
+}
+
+/* Attach file button */
+.attach-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 10px;
+  border-radius: 10px;
+  background: var(--bg3);
+  border: 1px solid var(--border2);
+  color: var(--ink2);
+  transition: background var(--t), color var(--t), border-color var(--t);
+}
+
+.attach-btn:hover {
+  background: var(--bg2);
+  color: var(--ink);
+  border-color: var(--ink3);
+}
+
+.attach-btn.has-file {
+  background: rgba(34, 197, 94, 0.12);
+  color: var(--signal);
+  border-color: var(--signal);
+}
+
+/* File preview strip */
+.file-preview {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  margin-top: 8px;
+  border-radius: 10px;
+  background: var(--bg3);
+  border: 1px solid var(--border2);
+  animation: slideUp 200ms ease forwards;
+}
+
+.file-preview-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink);
+  min-width: 0;
+}
+
+.file-preview-info svg {
+  flex-shrink: 0;
+  color: var(--blue);
+}
+
+.file-name {
+  font-size: 0.85rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 280px;
+}
+
+.file-size {
+  font-size: 0.75rem;
+  color: var(--ink2);
+  white-space: nowrap;
+}
+
+.file-remove {
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  color: var(--ink2);
+  background: none;
+  border: 1px solid transparent;
+  transition: background var(--t), color var(--t), border-color var(--t);
+}
+
+.file-remove:hover {
+  background: rgba(232, 64, 42, 0.1);
+  color: var(--rail);
+  border-color: rgba(232, 64, 42, 0.25);
+}
+
 /* --- System Information Card --- */
 .system-info-grid {
   display: flex;

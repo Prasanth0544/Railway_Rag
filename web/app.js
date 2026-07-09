@@ -19,6 +19,15 @@ const chipButtons     = document.querySelectorAll('[data-question]');
 const STORAGE_KEY = 'railway-rag-api';
 const THEME_KEY   = 'railway-rag-theme';
 
+// File upload refs
+const fileInput    = document.getElementById('fileInput');
+const attachBtn    = document.getElementById('attachBtn');
+const filePreview  = document.getElementById('filePreview');
+const fileNameEl   = document.getElementById('fileName');
+const fileSizeEl   = document.getElementById('fileSize');
+const fileRemoveEl = document.getElementById('fileRemove');
+let attachedFile   = null;
+
 // ─── Utilities ────────────────────────────────────────────
 const getBase = () => apiBaseInput.value.replace(/\/+$/, '');
 
@@ -449,6 +458,18 @@ async function submitQuestion(question) {
 askForm.addEventListener('submit', (e) => {
   e.preventDefault();
   const q = questionInput.value.trim();
+  const hasFile = attachedFile !== null;
+
+  // If there's a file attached, use the upload endpoint
+  if (hasFile) {
+    if (q.length < 1 && !hasFile) return;
+    questionInput.value = '';
+    updateCharCount();
+    submitWithFile(q || 'Analyze this file', attachedFile);
+    clearAttachedFile();
+    return;
+  }
+
   if (q.length < 3) return;
   questionInput.value = '';
   updateCharCount();
@@ -491,6 +512,7 @@ clearBtn.addEventListener('click', () => {
     </div>`;
   questionInput.value = '';
   updateCharCount();
+  clearAttachedFile();
   questionInput.focus();
 });
 
@@ -502,6 +524,107 @@ chipButtons.forEach(btn => {
   });
 });
 
+// ─── File Upload ──────────────────────────────────────────
+
+function formatFileSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function showFilePreview(file) {
+  attachedFile = file;
+  fileNameEl.textContent = file.name;
+  fileSizeEl.textContent = formatFileSize(file.size);
+  filePreview.style.display = 'flex';
+  attachBtn.classList.add('has-file');
+  // Make question text not required when file is attached
+  questionInput.removeAttribute('required');
+}
+
+function clearAttachedFile() {
+  attachedFile = null;
+  fileInput.value = '';
+  filePreview.style.display = 'none';
+  attachBtn.classList.remove('has-file');
+  questionInput.setAttribute('required', '');
+}
+
+attachBtn.addEventListener('click', () => fileInput.click());
+
+fileInput.addEventListener('change', () => {
+  const file = fileInput.files[0];
+  if (!file) return;
+
+  // Validate size (10MB max)
+  if (file.size > 10 * 1024 * 1024) {
+    alert('File too large. Maximum size is 10 MB.');
+    fileInput.value = '';
+    return;
+  }
+
+  showFilePreview(file);
+});
+
+fileRemoveEl.addEventListener('click', clearAttachedFile);
+
+// Handle file upload submission
+async function submitWithFile(question, file) {
+  hideEmpty();
+
+  // Create user question bubble with file indicator
+  const msgId = appendLoading(`${question}\n📎 ${file.name}`);
+  submitBtn.disabled = true;
+
+  try {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('question', question);
+
+    const res = await fetch(`${getBase()}/ask/upload`, {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || 'Upload failed');
+    }
+
+    const data = await res.json();
+
+    // Render answer using existing helpers
+    const answerHtml = renderMarkdown(data.answer || 'No response.');
+    const sourcesHtml = data.sources?.length
+      ? `<div class="sources-heading">SOURCES (${data.sources.length})</div>` + buildChecklistSources(data.sources)
+      : '';
+    const statsHtml = buildStatsStrip({
+      numDocs: data.num_documents_retrieved || 0,
+      avgScore: data.avg_relevance_score || 0,
+      responseTime: data.response_time_ms || 0,
+      llmModel: `${data.llm_model || '—'} (📷 Multi-Modal)`,
+      embedModel: data.embedding_model || '—',
+    });
+
+    const el = document.getElementById(msgId);
+    if (el) {
+      const answerContent = el.querySelector('.answer-content');
+      answerContent.innerHTML = `
+        <div class="answer-card">
+          <div class="answer-text">${answerHtml}</div>
+          ${sourcesHtml}
+          ${statsHtml}
+        </div>`;
+    }
+
+  } catch (e) {
+    replaceWithError(msgId, `${e.message}. Make sure the API server is running.`);
+  } finally {
+    submitBtn.disabled = false;
+    questionInput.focus();
+  }
+}
+
 // ─── Theme toggle ─────────────────────────────────────────
 themeToggle.addEventListener('click', () => {
   const html = document.documentElement;
@@ -509,6 +632,88 @@ themeToggle.addEventListener('click', () => {
   html.dataset.theme = next;
   localStorage.setItem(THEME_KEY, next);
 });
+
+// ─── Voice Input (Web Speech API) ─────────────────────────
+const voiceBtn = document.getElementById('voiceBtn');
+let recognition = null;
+let isRecording = false;
+
+function initVoiceInput() {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+  if (!SpeechRecognition) {
+    voiceBtn.classList.add('unsupported');
+    voiceBtn.title = 'Voice input not supported in this browser';
+    voiceBtn.addEventListener('click', () => {
+      alert('Voice input is not supported in your browser.\nPlease use Chrome, Edge, or Safari.');
+    });
+    return;
+  }
+
+  recognition = new SpeechRecognition();
+  recognition.continuous = false;
+  recognition.interimResults = true;
+  recognition.lang = 'en-IN';  // Indian English for railway station names
+  recognition.maxAlternatives = 1;
+
+  let finalTranscript = '';
+
+  recognition.onstart = () => {
+    isRecording = true;
+    voiceBtn.classList.add('recording');
+    questionInput.placeholder = '🎤 Listening... speak your question';
+    finalTranscript = '';
+  };
+
+  recognition.onresult = (event) => {
+    let interim = '';
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const transcript = event.results[i][0].transcript;
+      if (event.results[i].isFinal) {
+        finalTranscript += transcript;
+      } else {
+        interim += transcript;
+      }
+    }
+    // Show live transcription in the textarea
+    questionInput.value = finalTranscript + interim;
+    updateCharCount();
+  };
+
+  recognition.onend = () => {
+    isRecording = false;
+    voiceBtn.classList.remove('recording');
+    questionInput.placeholder = 'Ask about train 12727, cancellation rules, Vijayawada station…';
+
+    if (finalTranscript.trim()) {
+      questionInput.value = finalTranscript.trim();
+      updateCharCount();
+      questionInput.focus();
+    }
+  };
+
+  recognition.onerror = (event) => {
+    isRecording = false;
+    voiceBtn.classList.remove('recording');
+    questionInput.placeholder = 'Ask about train 12727, cancellation rules, Vijayawada station…';
+
+    if (event.error === 'no-speech') {
+      // Silently ignore — user just didn't speak
+    } else if (event.error === 'not-allowed') {
+      alert('Microphone access denied.\nPlease allow microphone permission in your browser settings.');
+    } else {
+      console.warn('Speech recognition error:', event.error);
+    }
+  };
+
+  voiceBtn.addEventListener('click', () => {
+    if (isRecording) {
+      recognition.stop();
+    } else {
+      recognition.start();
+    }
+  });
+}
 
 // ─── Init ─────────────────────────────────────────────────
 const savedBase  = localStorage.getItem(STORAGE_KEY);
@@ -519,3 +724,4 @@ if (savedTheme) document.documentElement.dataset.theme = savedTheme;
 
 updateCharCount();
 checkHealth();
+initVoiceInput();

@@ -101,6 +101,7 @@ class UnifiedRetriever:
         self.embeddings = get_embeddings()
         self.vector_stores: dict = {}
         self._load_collections()
+        self._init_station_resolver()
 
     def _load_collections(self) -> None:
         """Load all existing ChromaDB collections."""
@@ -125,18 +126,100 @@ class UnifiedRetriever:
         else:
             print("[WARN] No ChromaDB collections found! Run: python scripts/create_embeddings.py")
 
-    def _lookup_by_train_number(self, query: str) -> list[Document]:
+    def _init_station_resolver(self) -> None:
+        """Initialize station alias search maps using build_station_lookup."""
+        try:
+            import difflib
+            from scripts.preprocess import build_station_lookup
+            
+            lookup = build_station_lookup()
+            self.station_names_to_code = {}
+            self.all_station_names = []
+            
+            for code, info in lookup.items():
+                code_lower = code.lower()
+                self.station_names_to_code[code_lower] = (info.get("name", code), code)
+                
+                name = info.get("name", "")
+                if name:
+                    name_lower = name.lower()
+                    self.station_names_to_code[name_lower] = (name, code)
+                    self.all_station_names.append(name)
+                
+                for aka in info.get("aka", []):
+                    aka_lower = aka.lower()
+                    # Use the OFFICIAL station name (not the alias) as canonical name.
+                    # Route documents use official names like "Visakhapatnam",
+                    # not AKAs like "Vizag", so $contains must search the official name.
+                    official_name = name if name else aka
+                    self.station_names_to_code[aka_lower] = (official_name, code)
+                    self.all_station_names.append(aka)
+                    
+            print(f"[Resolver] Loaded {len(self.station_names_to_code)} names/AKAs for fuzzy resolution")
+        except Exception as e:
+            print(f"[WARN] Failed to load station lookup for resolver: {e}")
+            self.station_names_to_code = {}
+            self.all_station_names = []
+
+    def _resolve_station(self, query: str) -> tuple[str, str] | None:
+        """
+        Fuzzy match query text against station names or codes.
+        Returns: tuple of (canonical_name, station_code) or None
+        """
+        if not self.station_names_to_code:
+            return None
+
+        import difflib
+        query_lower = query.lower()
+
+        # 1. Exact phrase/name/code scan with word boundaries (longest first to avoid noise)
+        sorted_names = sorted(self.station_names_to_code.keys(), key=len, reverse=True)
+        stop_words = {
+            "the", "and", "for", "are", "get", "new", "old", "can", "our", "out",
+            "all", "its", "any", "not", "but", "who", "you", "she", "his", "her",
+            "him", "has", "had", "was", "web", "doc", "app", "now", "day", "runs"
+        }
+        for name in sorted_names:
+            if len(name) > 2:  # Ignore 1-2 char noise
+                if name in stop_words:
+                    continue
+                if re.search(rf"\b{re.escape(name)}\b", query_lower):
+                    return self.station_names_to_code[name]
+
+        # 2. Fuzzy match single word tokens (cutoff 0.8)
+        # We split the query into words (length >= 4)
+        words = re.findall(r"\b[a-zA-Z]{4,}\b", query_lower)
+        ignore_words = {
+            "train", "trains", "station", "stations", "route", "routes", "daily", "weekly",
+            "what", "where", "from", "stop", "stops", "here", "arrive", "departure",
+            "cancellation", "cancel", "charge", "charges", "rule", "rules", "luggage", "class"
+        }
+        for word in words:
+            if word in ignore_words:
+                continue
+            # Fuzzy match against canonical and AKA names
+            close_matches = difflib.get_close_matches(word, self.all_station_names, n=1, cutoff=0.8)
+            if close_matches:
+                canonical_match = close_matches[0]
+                return self.station_names_to_code[canonical_match.lower()]
+
+        return None
+
+    def _lookup_by_train_number(self, query: str) -> tuple[list[Document], list[str]]:
         """
         If the query contains a 5-digit train number (e.g. 12727),
         do a direct ChromaDB metadata lookup in both 'trains' and
         'train_routes' collections and return exact matches.
         This bypasses semantic search for precise train number queries.
+
+        Returns: (list of matched Documents, list of matched train numbers)
         """
         numbers = re.findall(r"\b(\d{5})\b", query)
         if not numbers:
-            return []
+            return [], []
 
         exact_docs: list[Document] = []
+        matched_numbers: list[str] = []
 
         # Collections to search for exact train number matches
         lookup_collections = [
@@ -156,47 +239,97 @@ class UnifiedRetriever:
                 try:
                     result = col.get(
                         where={"train_no": num},
-                        limit=1,
+                        limit=5,
                         include=["documents", "metadatas"],
                     )
                     if result["documents"]:
-                        doc = Document(
-                            page_content=result["documents"][0],
-                            metadata={**result["metadatas"][0], "collection": label, "relevance_score": score},
-                        )
-                        exact_docs.append(doc)
+                        for i in range(len(result["documents"])):
+                            doc = Document(
+                                page_content=result["documents"][i],
+                                metadata={**result["metadatas"][i], "collection": label, "relevance_score": score},
+                            )
+                            exact_docs.append(doc)
                         train_name = result["metadatas"][0].get("train_name", "")
-                        print(f"[EXACT] {label}: train {num} — {train_name}")
+                        if num not in matched_numbers:
+                            matched_numbers.append(num)
+                        print(f"[EXACT] {label}: train {num} — {train_name} ({len(result['documents'])} docs)")
                 except Exception as exc:
                     print(f"[WARN] Lookup failed in '{col_name}' for train {num}: {exc}")
 
-        return exact_docs
+        return exact_docs, matched_numbers
 
     def retrieve(self, query: str) -> list[Document]:
         """
-        Search all collections and return the top-k most relevant
-        documents merged across all of them, sorted by score.
+        Search relevant collections and return the top-k most relevant
+        documents merged, sorted by score.
 
-        Also does a direct metadata lookup for any 5-digit train numbers
-        found in the query, prepending exact matches at the top.
+        Uses fuzzy station query rewriting, keyword substring search (hybrid search),
+        intent-based collection filtering, and threshold filtering.
         """
         if not self.vector_stores:
             return []
 
-        # --- Step 1: Exact train number lookup (bypasses semantic search) ---
-        exact_docs = self._lookup_by_train_number(query)
+        # --- Step 1: Exact train number lookup ---
+        exact_docs, matched_train_numbers = self._lookup_by_train_number(query)
+        train_number_detected = len(matched_train_numbers) > 0
 
-        # --- Step 2: Semantic search across all collections ---
+        # --- Step 2: Fuzzy station name resolution & query rewriting ---
+        search_query = query
+        station_info = self._resolve_station(query)
+        if station_info:
+            canonical_name, station_code = station_info
+            if station_code.lower() not in query.lower() or canonical_name.lower() not in query.lower():
+                search_query = f"{query} {canonical_name} {station_code}"
+                print(f"[REWRITE] Fuzzy resolved: '{query}' -> '{search_query}'")
+
+        # --- Step 3: Intent-Based Collection Filtering (Metadata Routing) ---
+        query_lower = query.lower()
+        active_collections = list(self.vector_stores.keys())
+        
+        transit_keywords = ["stop", "stops", "route", "timings", "timetable", "departure", "arrive", "arrival", "halt", "pass through", "runs from"]
+        rules_keywords = ["cancel", "cancellation", "refund", "luggage", "penalty", "fine", "tte", "rule", "duty", "duties", "allowance", "charge", "charges", "fee"]
+        
+        if any(kw in query_lower for kw in transit_keywords):
+            active_collections = [c for c in active_collections if c in ("train_routes", "stations", "trains")]
+            print(f"[INTENT] Routing to transit collections: {active_collections}")
+        elif any(kw in query_lower for kw in rules_keywords):
+            active_collections = [c for c in active_collections if c in ("railway_rules", "references")]
+            print(f"[INTENT] Routing to rules/references collections: {active_collections}")
+
+        # --- Step 4: Hybrid Keyword Contains Matching ---
+        keyword_docs: list[Document] = []
+        if station_info:
+            canonical_name, station_code = station_info
+            for name in active_collections:
+                if name in ("train_routes", "stations"):
+                    try:
+                        col = self.client.get_collection(name)
+                        res = col.get(where_document={"$contains": canonical_name})
+                        if res["documents"]:
+                            print(f"[KEYWORD] Found {len(res['documents'])} matches in '{name}' containing '{canonical_name}'")
+                            for i in range(len(res["documents"])):
+                                doc = Document(
+                                    page_content=res["documents"][i],
+                                    metadata={**res["metadatas"][i], "collection": name, "relevance_score": 0.95}
+                                )
+                                keyword_docs.append(doc)
+                    except Exception as exc:
+                        print(f"[WARN] Keyword contains query failed for '{name}': {exc}")
+
+        # --- Step 5: Semantic search across active collections ---
         all_results: list[tuple[Document, float]] = []
 
-        for name, store in self.vector_stores.items():
+        for name in active_collections:
+            store = self.vector_stores.get(name)
+            if not store:
+                continue
             try:
                 results = store.similarity_search_with_relevance_scores(
-                    query, k=PER_COLLECTION_K
+                    search_query, k=PER_COLLECTION_K
                 )
                 for doc, score in results:
-                    if score < 0.1:
-                        continue  # skip irrelevant cross-collection noise
+                    if score < 0.20:
+                        continue  # ignore low relevance scores (cut-off threshold)
                     doc.metadata["collection"] = name
                     doc.metadata["relevance_score"] = round(score, 4)
                     all_results.append((doc, score))
@@ -206,12 +339,46 @@ class UnifiedRetriever:
         all_results.sort(key=lambda x: x[1], reverse=True)
         semantic_docs = [doc for doc, _ in all_results[: self.top_k]]
 
-        # --- Step 3: Merge — exact matches first, then semantic ---
-        # Deduplicate: skip semantic results that duplicate exact matches
-        exact_ids = {d.page_content[:80] for d in exact_docs}
-        deduped_semantic = [d for d in semantic_docs if d.page_content[:80] not in exact_ids]
+        # --- Step 6: Merge & Deduplicate ---
+        all_candidate_docs = exact_docs + keyword_docs + semantic_docs
+        deduped_docs = []
+        seen_content = set()
+        for doc in all_candidate_docs:
+            snippet = doc.page_content[:80]
+            if snippet not in seen_content:
+                seen_content.add(snippet)
+                deduped_docs.append(doc)
 
-        return (exact_docs + deduped_semantic)[: self.top_k]
+        # --- Step 7: Trim Route Schedules to avoid LLM context length overflow ---
+        # Only trim when query is about a station (not a specific train number).
+        # For train number queries, the user wants the full schedule.
+        if station_info and not train_number_detected:
+            canonical_name, station_code = station_info
+            for doc in deduped_docs:
+                if doc.metadata.get("source_type") == "train_route":
+                    content = doc.page_content
+                    if "Schedule:" in content:
+                        parts = content.split("Schedule:")
+                        route_meta = parts[0]
+                        schedule_part = parts[1]
+
+                        stops_list = schedule_part.split("|")
+                        trimmed_stops = []
+
+                        for idx, stop in enumerate(stops_list):
+                            is_target = (station_code.lower() in stop.lower() or 
+                                         canonical_name.lower() in stop.lower())
+                            is_first = (idx == 0)
+                            is_last = (idx == len(stops_list) - 1)
+
+                            if is_target or is_first or is_last:
+                                trimmed_stops.append(stop.strip())
+
+                        doc.page_content = route_meta + "Schedule: " + " | ".join(trimmed_stops)
+
+        # Expand limit when station or train number detected to avoid truncation
+        limit = 20 if (station_info or train_number_detected) else self.top_k
+        return deduped_docs[:limit]
 
     def __call__(self, query: str) -> list[Document]:
         """Make retriever callable (for use in LCEL chains)."""

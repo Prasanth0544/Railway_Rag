@@ -20,6 +20,11 @@ chromadb
 # ── Data Processing ───────────────────────────────────
 pandas
 python-dotenv
+python-multipart                # For FastAPI file uploads (image/PDF)
+
+# ── Multi-Modal (Gemini Vision) ───────────────────────
+google-generativeai             # Native Gemini SDK for image/PDF/audio processing
+Pillow                          # Image processing for multi-modal uploads (PNG/JPG/WEBP)
 
 # ── Optional: Offline/Local Embeddings (LM Studio mode)
 sentence-transformers         # For USE_LOCAL_EMBEDDINGS=true (offline, no rate limits)

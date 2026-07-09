@@ -17,7 +17,7 @@ except AttributeError:
     pass
 
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv  # type: ignore[import-untyped]
@@ -287,6 +287,155 @@ async def ask_question_stream(request: QuestionRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.post("/ask/upload", tags=["RAG"])
+async def ask_with_file(
+    file: UploadFile = File(...),
+    question: str = Form(default=""),
+):
+    """
+    Multi-modal RAG endpoint — accepts an image (PNG/JPG/WEBP) or PDF file
+    along with an optional text question.
+
+    Gemini Vision reads the file and generates an answer.
+    If a train number or station is detected, ChromaDB context is also provided.
+
+    **Supported file types:** PNG, JPG, JPEG, WEBP, PDF
+    **Max file size:** 10 MB
+    """
+    import time
+    import google.generativeai as genai
+
+    # Validate
+    api_key = os.getenv("GOOGLE_API_KEY", "")
+    if not api_key or api_key == "your-gemini-api-key-here":
+        raise HTTPException(status_code=503, detail="GOOGLE_API_KEY not configured for multi-modal.")
+
+    allowed_types = {
+        "image/png": "png", "image/jpeg": "jpeg", "image/jpg": "jpg",
+        "image/webp": "webp", "application/pdf": "pdf",
+    }
+    content_type = file.content_type or ""
+    if content_type not in allowed_types:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type: {content_type}. Supported: PNG, JPG, WEBP, PDF",
+        )
+
+    # Read file bytes (max 10MB)
+    file_bytes = await file.read()
+    if len(file_bytes) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File too large. Maximum 10 MB.")
+
+    try:
+        t0 = time.time()
+
+        # Configure Gemini
+        genai.configure(api_key=api_key)
+        model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        model = genai.GenerativeModel(model_name)
+
+        # ── Step 1: Extract intent from the file (quick Gemini Vision call) ──────
+        # Always run a quick extraction to get the real question from the image/PDF,
+        # then combine with any typed question for retrieval.
+        import re, io
+        effective_question = question.strip()
+
+        # Always extract from the file so we can retrieve relevant ChromaDB context
+        extraction_prompt = (
+            "Look at this file carefully. "
+            "If it contains a question or query (e.g. text written on a whiteboard, "
+            "screenshot of a typed question, or a railway ticket), "
+            "extract and return ONLY that question or query as plain text. "
+            "If it is a railway ticket, return: 'Train ticket for train [number] from [source] to [destination]'. "
+            "If you cannot determine a question, return: 'Analyze this railway document and describe what you see.'"
+        )
+        if content_type == "application/pdf":
+            ext_resp = model.generate_content(
+                [extraction_prompt, {"mime_type": "application/pdf", "data": file_bytes}]
+            )
+        else:
+            import PIL.Image
+            img_for_extract = PIL.Image.open(io.BytesIO(file_bytes))
+            ext_resp = model.generate_content([extraction_prompt, img_for_extract])
+        extracted = ext_resp.text.strip() if ext_resp.text else ""
+
+        # Merge: prefer user's typed question + extracted context for retrieval
+        if effective_question and extracted:
+            retrieval_query = f"{effective_question} {extracted}"
+        elif extracted:
+            retrieval_query = extracted
+            effective_question = extracted  # use extracted as the question if nothing typed
+        else:
+            retrieval_query = effective_question or "Indian railway information"
+
+        # ── Step 2: Use merged query for ChromaDB retrieval ────────────────
+        rag_context = ""
+        sources = []
+        if rag_chain:
+            docs = rag_chain.retriever.retrieve(retrieval_query)
+            if docs:
+                from app.rag import format_docs, get_sources
+                rag_context = format_docs(docs)
+                sources = get_sources(docs)
+
+        system_instruction = (
+            "You are an expert Indian Railways assistant. Analyze the uploaded file "
+            "(image or PDF) and answer the user's question about it. "
+            "Be thorough and extract all relevant details.\n"
+        )
+        if rag_context:
+            system_instruction += (
+                "\nAdditional railway database context (use if relevant):\n"
+                + rag_context[:4000]  # cap context size
+            )
+
+        # Send to Gemini Vision
+        import PIL.Image
+        import io
+
+        if content_type == "application/pdf":
+            # For PDFs, upload the raw bytes
+            response = model.generate_content(
+                [
+                    system_instruction,
+                    {"mime_type": "application/pdf", "data": file_bytes},
+                    question,
+                ],
+                generation_config={"temperature": 0.3, "max_output_tokens": 2048},
+            )
+        else:
+            # For images, open with PIL
+            image = PIL.Image.open(io.BytesIO(file_bytes))
+            response = model.generate_content(
+                [system_instruction, image, effective_question],
+                generation_config={"temperature": 0.3, "max_output_tokens": 2048},
+            )
+
+        elapsed_ms = round((time.time() - t0) * 1000, 1)
+        answer_text = response.text if response.text else "Could not process the file."
+
+        # Compute avg relevance score from sources
+        scores = [s["relevance_score"] for s in sources if isinstance(s.get("relevance_score"), (int, float))]
+        avg_score = round(sum(scores) / len(scores), 4) if scores else 0.0
+
+        return {
+            "question": question,
+            "answer": answer_text,
+            "sources": sources,
+            "num_documents_retrieved": len(sources),
+            "response_time_ms": elapsed_ms,
+            "avg_relevance_score": avg_score,
+            "llm_model": model_name,
+            "embedding_model": "all-MiniLM-L6-v2",
+            "file_name": file.filename,
+            "file_type": content_type,
+            "mode": "multi-modal",
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
 
 
 @app.get("/trains", tags=["Data"])

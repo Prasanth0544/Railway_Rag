@@ -1,53 +1,70 @@
 # 🚂 Railway RAG Assistant — Project Summary
 
-This document provides a comprehensive summary of the **Railway RAG Assistant** project, detailing the architecture, the dataset ingestion pipelines, the RAG orchestration, API endpoints, current development status, and next steps.
+This document provides a comprehensive technical summary of the **Railway RAG Assistant** project, detailing the architecture, dataset ingestion pipelines, hybrid retrieval strategies, RAG orchestration, API endpoints, and the web dashboard.
 
 ---
 
 ## 🧭 Project Goal
 
-The **Railway RAG Assistant** is a Retrieval-Augmented Generation (RAG) system built to answer natural-language queries about Indian Railways (trains, stations, schedules, routes, rules, and general information) using a semantic vector search backed by **Google Gemini** (or local offline LLMs).
+The **Railway RAG Assistant** is a **Hybrid Retrieval-Augmented Generation (RAG)** system built to answer natural-language queries about Indian Railways (trains, stations, schedules, routes, rules, and general information) using multi-strategy retrieval backed by **Google Gemini** (or local offline LLMs via LM Studio).
 
-Rather than fine-tuning a model, this RAG approach extracts relevant context from a persistent **ChromaDB** vector store and feeds it to the LLM to compile accurate, hallucination-free, and structured responses.
+Rather than fine-tuning a model, this RAG approach retrieves relevant context from a persistent **ChromaDB** vector store using a combination of vector search, keyword matching, and metadata lookups, then feeds it to the LLM to compile accurate, hallucination-free, and structured responses.
 
 ---
 
 ## 🏗️ Architecture & Query Flow
 
 ```
-                     🧑 User Question
-                            │
-                            ▼
-              ⚡ FastAPI Server (POST /ask)
-                            │
-                            ▼
-           🔍 Unified Retriever (retriever.py)
-                            │
-            ┌───────────────┼───────────────┐
-            ▼               ▼               ▼
-      [railway_rules]    [trains]      [stations]   ... (5 collections)
-            └───────────────┬───────────────┘
-                            │ (Merge & Rank by Score)
-                            ▼
-                Top-K Context Documents
-                            │
-                            ▼
-           📝 Prompt Template (rag.py Prompt)
-                            │
-                            ▼
-         🤖 Google Gemini API (or Local LM Studio)
-                            │
-                            ▼
-                 ✅ JSON-Structured Response
+                         🧑 User Question
+                              │
+                              ▼
+               ⚡ FastAPI Server (POST /ask/stream)
+                              │
+                    ┌─────────┴──────────┐
+                    ▼                    ▼
+          Step 1: Train Number    Step 2: Fuzzy Station
+          Detection (regex)       Resolution (difflib)
+                    │                    │
+                    ▼                    ▼
+          Exact Metadata          Query Rewriting
+          Lookup (score 1.0)      (append canonical name + code)
+                    │                    │
+                    └─────────┬──────────┘
+                              ▼
+                   Step 3: Intent-Based Routing
+                (transit vs rules collection filter)
+                              │
+               ┌──────────────┼──────────────┐
+               ▼              ▼              ▼
+         Step 4:         Step 5:        Step 5:
+         Keyword         Vector         (same)
+         $contains       Similarity
+         Search          Search
+               └──────────────┬──────────────┘
+                              ▼
+                   Step 6: Merge & Deduplicate
+                              │
+                              ▼
+                   Step 7: Route Schedule Trimming
+                  (origin → target → destination only)
+                              │
+                              ▼
+                 📝 Prompt Template (rag.py)
+                              │
+                              ▼
+              🤖 Google Gemini 2.5 Flash (or LM Studio)
+                              │
+                              ▼
+                   ✅ Streamed JSON Response (SSE)
 ```
 
 ---
 
 ## 📊 Dataset Ingestion & Preprocessing
 
-The system processes large datasets exported from MongoDB (erail APK format) along with reference railway rules. A key innovation is the **cross-dataset station lookup table** that links all station datasets by `station_code` before embedding.
+The system processes large datasets exported from MongoDB (erail APK format) along with curated railway rules. A key innovation is the **cross-dataset station lookup table** that links all station datasets by `station_code` before embedding, and the **frequency enrichment** that cross-references running days from train_info into route documents.
 
-### Station Linking Pipeline (NEW)
+### Station Linking Pipeline
 
 Before any embedding, `preprocess.py` calls `build_station_lookup()` which merges three datasets:
 
@@ -59,101 +76,150 @@ Before any embedding, `preprocess.py` calls `build_station_lookup()` which merge
 
 The resulting lookup is **shared as a singleton** by both the station document builder and the route document builder.
 
-### Data Ingestion Statistics:
+### Frequency Enrichment Pipeline
 
-* **Railway Rules (`data/railway_rules.csv`)**: **183** rule documents covering booking rules (Tatkal, quotas), cancellation charges, luggage allowances, penalties, concessions, and department responsibilities.
-* **Train Information (`train_info.csv`)**: **12,813** train documents containing train numbers, names, types, sources/destinations, duration, operating days, speed type and zone.
-* **Station Documents (linked)**: **9,956** station documents — each embeds canonical name, city, railway zone (with full zone name), GPS coordinates, WiFi status, and **all alternate names (AKAs)** so name-based queries resolve correctly (e.g. "Tirupathi" matches TPTY).
-* **Train Routes (`train_route_decoded.csv`)**: **10,158** route documents — each embeds the **full station name sequence** (not just codes) and a **per-stop schedule** with arrival time, departure time, halt duration, and cumulative distance. This enables queries like "What time does 17225 stop at Bhimavaram?".
-* **Reference Data**: Ticket classes (`ticket_classes.csv`) and service taxes (`service_tax.csv`) — 90 reference documents.
+Route documents are enriched with running frequency data:
+- `preprocess.py` builds a `frequency_lookup` dictionary from `train_info.csv` mapping each train number to its `running_days_text`
+- Each route document's text now includes `"Runs on: Daily"` or `"Runs on: Mon, Thu, Sat"`, and the metadata includes a `runs_on` field
+- This enables the LLM to correctly distinguish daily vs weekly trains when answering station stop queries
 
+### Data Ingestion Statistics
+
+| Collection | Documents | Source | Content |
+|---|---|---|---|
+| Railway Rules | 183 | `data/railway_rules.csv` | Booking rules, cancellation charges, luggage, penalties, concessions, department roles |
+| Train Information | 12,813 | `train_info.csv` | Train numbers, names, types, sources, destinations, duration, operating days, speed type, zone |
+| Station Documents | 9,956 | Linked (info + zones + AKA) | Canonical name, city, zone, GPS, WiFi, all alternate names for fuzzy matching |
+| Train Routes | 10,158 | `train_route_decoded.csv` | Full station name sequence + per-stop schedule (arrival, departure, halt, distance) + running frequency |
+| References | 90 | `ticket_classes.csv` + `service_tax.csv` | Ticket class details and service tax info |
+| **Total** | **33,200** | | |
+
+---
+
+## 🧠 Hybrid Retrieval Strategies
+
+The `UnifiedRetriever` in `retriever.py` implements a 7-step retrieval pipeline that combines multiple strategies:
+
+### Step 1: Train Number Detection
+- Regex extracts 5-digit train numbers from the query (e.g. `"train 67239 stopping stations"` → `67239`)
+- Direct metadata lookup in `trains` and `train_routes` collections (`where={"train_no": "67239"}`)
+- Matched documents are assigned a relevance score of `1.0` (highest priority)
+
+### Step 2: Fuzzy Station Name Resolution
+- Uses `difflib.get_close_matches` (cutoff `0.8`) to match misspelled/phonetic station names
+- Exact match with word boundaries is tried first (longest match wins)
+- Stop words filter prevents common English words from matching short station codes (e.g. "the" ≠ station code `THE`)
+- If matched, the search query is rewritten to append the canonical name and code
+
+### Step 3: Intent-Based Collection Routing
+- Transit keywords (`stop`, `route`, `timetable`, `departure`, etc.) → route to `trains`, `stations`, `train_routes`
+- Rules keywords (`cancel`, `refund`, `luggage`, `penalty`, etc.) → route to `railway_rules`, `references`
+- Reduces irrelevant noise by skipping unrelated collections entirely
+
+### Step 4: Keyword Substring Search (Hybrid)
+- When a station is resolved, uses ChromaDB's `$contains` operator to find all route documents containing the station name
+- Assigns `0.95` relevance score to pin these results near the top
+- Solves the "haystack dilution" problem where a station name is a tiny fraction of a 70-stop route document
+
+### Step 5: Vector Semantic Search
+- Standard cosine similarity search using `all-MiniLM-L6-v2` embeddings (384 dimensions)
+- Retrieves `PER_COLLECTION_K=5` results per active collection
+- Applies a `0.20` relevance score threshold to filter noise
+
+### Step 6: Merge & Deduplicate
+- Combines exact matches (Step 1), keyword matches (Step 4), and semantic matches (Step 5)
+- Deduplicates by first 80 characters of content
+- Priority order: exact (1.0) → keyword (0.95) → semantic (0.2–0.9)
+
+### Step 7: Route Schedule Trimming
+- For station-based queries, condenses long route schedules to only 3 stops: origin, target station, and terminal
+- Reduces context size by ~90%, preventing LLM context window overflow
+- Skipped for train number queries (user wants the full schedule)
+
+### Dynamic Limit Expansion
+- When a station or train number is detected, the retrieval limit expands from `top_k` (default 5) to `20`
+- Ensures all matching trains at a station are returned (e.g. Vinukonda has 14 trains)
 
 ---
 
 ## 📁 Project Structure & Codebase Components
 
 ```
-railway-rag-assistant/
+Railway RAG Assistant/
 ├── .env                        # Environment configurations (API keys & provider settings)
 ├── .gitignore                  # Git ignore file (excludes virtual environment and database)
 ├── requirements.txt            # Python dependencies (FastAPI, LangChain, ChromaDB, Pandas)
 ├── Readme.md                   # Setup instructions and user guide
-├── project_summary.md          # [THIS FILE] Project summary
+├── project_summary.md          # [THIS FILE] Detailed project summary
+├── COMMANDS.md                 # Complete command reference (750+ lines)
 ├── data/
 │   └── railway_rules.csv       # Hand-curated CSV of 183 railway rules
 ├── scripts/
-│   ├── preprocess.py           # Ingests, parses, and converts CSVs to LangChain Documents
-│   └── create_embeddings.py    # Generates Gemini embeddings and populates ChromaDB
+│   ├── preprocess.py           # Ingests CSVs, builds station lookup, enriches routes with frequency
+│   └── create_embeddings.py    # Generates embeddings and populates ChromaDB (batched, with retry)
 ├── app/
-│   ├── main.py                 # FastAPI application and endpoint definitions
-│   ├── retriever.py            # Unified retriever querying across all collections
-│   └── rag.py                  # LangChain RAG pipeline supporting cloud/local LLM execution
+│   ├── main.py                 # FastAPI application with REST + SSE streaming endpoints
+│   ├── retriever.py            # Hybrid retriever (7-step pipeline: vector + keyword + metadata + fuzzy)
+│   └── rag.py                  # LangChain RAG chain with Gemini/LM Studio provider switching
 └── web/
-    ├── index.html              # Main HTML markup with System Info & RAG Pipeline Flow
-    ├── styles.css              # Custom styling with dark mode, animations, and layouts
-    └── app.js                  # Frontend logic handling Fetch-based SSE streaming and rendering
+    ├── index.html              # Dashboard with system info, pipeline flow, source checklist
+    ├── styles.css              # Design system (dark mode, glassmorphism, micro-animations)
+    └── app.js                  # SSE stream reader, markdown renderer, health polling
 ```
 
-### Script & Code Walkthrough:
+### Code Walkthrough
 
 1. **`scripts/preprocess.py`**
    * Dynamically loads data from `.csv` files stored in a configurable directory (`DATA_COLLECTIONS_DIR`).
-   * Combines datasets, merges station zone details, and decodes JSON-based routes.
+   * Builds a **cross-dataset station lookup** by merging `station_info`, `station_zones`, and `station_aka_info` by station code.
+   * Builds a **frequency lookup** from `train_info.csv` to enrich route documents with running days.
    * Standardizes text inputs into readable natural-language templates optimized for embedding search.
 
 2. **`scripts/create_embeddings.py`**
-   * Configures embeddings via **Google Generative AI** (`embedding-001`) or locally (`sentence-transformers/all-MiniLM-L6-v2`).
-   * Iterates through documents in batches (respecting Gemini API rate limits) and saves vectors to a local persistent directory (`chroma_db/`).
-   * Supports command-line switches like `--skip-routes`, `--rules-only`, or `--trains-only` to facilitate modular/fast rebuilding.
+   * Configures embeddings via `sentence-transformers/all-MiniLM-L6-v2` (offline) or Google Gemini (cloud).
+   * Iterates through documents in batches of 256 (with auto-retry for rate limits) and saves vectors to `chroma_db/`.
+   * Supports CLI switches: `--skip-routes`, `--rules-only`, `--trains-only`, `--routes-only`.
 
 3. **`app/retriever.py`**
-   * Connects to local persistent **ChromaDB**.
-   * Implements a **Unified Retriever** which runs concurrent queries against active vector database collections (`railway_rules`, `trains`, `stations`, `train_routes`, `references`), merging search results and sorting them globally by relevance score.
-   * Can switch to local offline embeddings (`sentence-transformers/all-MiniLM-L6-v2`) if offline mode is activated.
+   * Implements the **7-step hybrid retrieval pipeline** (train number detection → fuzzy resolution → intent routing → keyword search → vector search → merge → trimming).
+   * Maintains a singleton station resolver with 20,395 name/AKA entries for fuzzy matching.
+   * Dynamically expands retrieval limits when station or train number queries are detected.
 
 4. **`app/rag.py`**
-   * Orchestrates the final Prompt-to-LLM pipeline.
-   * Connects to either **Google Gemini API** (cloud-based `gemini-1.5-flash`) or a local **LM Studio** instance (compatible with offline testing on Ryzens/RTX GPUs).
-   * Enforces rules via system prompting (no hallucinations, strict formatting, citing source train/station details).
+   * Orchestrates the Retrieve → Augment → Generate pipeline.
+   * Connects to **Google Gemini 2.5 Flash** (cloud) or **LM Studio** (local, OpenAI-compatible).
+   * Enforces strict system prompting: no hallucination, cite train numbers, include station codes, format clearly.
 
 5. **`app/main.py`**
-   * Implements a FastAPI application serving:
-     * `POST /ask` — REST query path executing the RAG pipeline.
-     * `POST /ask/stream` — Real-time streaming RAG endpoint transmitting answer tokens via Server-Sent Events (SSE).
-     * `GET /trains` & `GET /stations` — Paginated details directly from source datasets.
-     * `GET /rules` — Lists ingested railway rules.
-     * `GET /trains/{train_no}` & `GET /stations/{station_code}` — Specific key-based lookups.
-     * `GET /health` — Verifies API running state, LLM details, and collection stats.
+   * FastAPI application with CORS middleware and lifespan-managed RAG chain initialization.
+   * `POST /ask` — Standard RAG query returning JSON with answer + sources.
+   * `POST /ask/stream` — SSE streaming endpoint sending metadata, tokens, and done events.
+   * Data endpoints: `GET /trains`, `GET /stations`, `GET /rules` with pagination.
+   * `GET /health` — System health with LLM provider, model info, and per-collection document counts.
 
 6. **`web/` Front-End Web Client**
-   * **`index.html`**: A responsive, two-panel dashboard built on semantic HTML5. Includes an input text area, template question chips, sidebar system status monitor, and visual RAG flowchart.
-   * **`styles.css`**: Design tokens for custom themes (dark mode default, light mode togglable), animations (pulsing pipeline flows, loading typing bubbles), and clean key-value listings.
-   * **`app.js`**: Handles:
-     * System health check query on initialization to fill sidebar stats.
-     * Stream reader reading from `/ask/stream`.
-     * Real-time rendering of tokens, retrieved sources checklists with score filters, and RAG execution statistics.
+   * **`index.html`**: Responsive two-panel dashboard with input area, template question chips, sidebar system monitor, and animated RAG pipeline flowchart.
+   * **`styles.css`**: Custom design tokens, dark mode default (light mode togglable), glassmorphism cards, micro-animations, and Inter font from Google Fonts.
+   * **`app.js`**: Health check on init, SSE stream reader for `/ask/stream`, real-time token rendering, source checklist with type badges and scores, RAG statistics strip.
 
 ---
 
 ## ⚙️ Configuration & Modes
 
-The project is highly flexible, supporting two primary execution strategies configured via `.env`:
-
 | Mode | LLM Provider | Embedding Provider | Internet Required? | Setup |
 |---|---|---|---|---|
-| **Cloud (Default)** | Google Gemini (`gemini-1.5-flash`) | Google Gemini (`embedding-001`) | **Yes** | Requires `GOOGLE_API_KEY` in `.env` |
-| **Offline (Local)** | Local server (LM Studio e.g. Gemma 2 9B) | HuggingFace sentence-transformers | **No** | Requires `USE_LOCAL_EMBEDDINGS=true` and `LLM_PROVIDER=lmstudio` |
+| **Cloud (Default)** | Google Gemini 2.5 Flash | sentence-transformers (offline) | Yes (for LLM calls only) | `GOOGLE_API_KEY` in `.env` |
+| **Fully Offline** | LM Studio (Gemma 2 9B) | sentence-transformers (offline) | No | `USE_LOCAL_EMBEDDINGS=true` + `LLM_PROVIDER=lmstudio` |
 
 ---
 
-## 🚦 Current Status & Verification Checklist
+## 🚦 Current Status
 
-- [x] **Project Scaffolding**: Setup `requirements.txt`, `.gitignore`, and `.env` template.
-- [x] **Data Pipelines**: Finished robust data cleaning scripts in `preprocess.py` targeting the 24k+ total source documents.
-- [x] **Core Backend & Chain**: Fully coded retriever system (`retriever.py`), RAG generation loop (`rag.py`), and FastAPI routes (`main.py`).
-- [x] **Local Test Validation**: Syntactical analysis verified for all python modules.
-- [x] **Dependency Installation**: Completed successfully.
-- [x] **Vector Database Creation**: Vector embeddings generated for rules, trains, stations, and routes in local ChromaDB.
-- [x] **FastAPI Server Launch**: Back-end running on `http://localhost:8000` supporting Server-Sent Events (SSE).
-- [x] **Responsive Web Dashboard**: Frontend UI integrated with streaming answers, dynamic system settings card, checklist sources, and visual pipeline flow.
-
+- [x] **Project Scaffolding**: `.env`, `.gitignore`, `requirements.txt`, `COMMANDS.md`
+- [x] **Data Pipelines**: Station linking, route enrichment with frequency, reference data loading
+- [x] **Embedding Pipeline**: 33,200 documents embedded across 5 ChromaDB collections
+- [x] **Hybrid Retriever**: 7-step pipeline (train number + fuzzy + intent + keyword + vector + dedup + trimming)
+- [x] **RAG Chain**: Gemini/LM Studio dual-provider support with streaming
+- [x] **FastAPI Backend**: REST + SSE streaming endpoints, data browsing, health checks
+- [x] **Web Dashboard**: Dark mode, SSE streaming, source checklist, pipeline flow, stats strip
+- [x] **Pushed to GitHub**: https://github.com/Prasanth0544/Railway_Rag

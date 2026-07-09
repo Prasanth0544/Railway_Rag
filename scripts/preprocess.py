@@ -393,6 +393,20 @@ def load_train_route_documents(max_trains: int = 3000) -> list[Document]:
 
     df = pd.read_csv(csv_path, low_memory=False)
 
+    # Build a lookup for running frequency (runs_on) from train_info.csv
+    info_path = os.path.join(DATA_COLLECTIONS_DIR, "train_info.csv")
+    frequency_lookup = {}
+    if os.path.exists(info_path):
+        try:
+            info_df = pd.read_csv(info_path, low_memory=False)
+            for _, r in info_df.iterrows():
+                t_no = _safe(r.get("train_number"), "")
+                runs = _safe(r.get("running_days_text"), "")
+                if t_no and runs and runs != "N/A":
+                    frequency_lookup[t_no] = runs
+        except Exception as e:
+            print(f"[WARN] Failed to load frequency lookup from train_info.csv: {e}")
+
     if max_trains:
         df = df.head(max_trains)
 
@@ -457,6 +471,11 @@ def load_train_route_documents(max_trains: int = 3000) -> list[Document]:
         if train_name and train_name != "N/A":
             text += f" ({train_name})"
         text += f" route from {first_display} to {last_display}."
+        
+        runs_on = frequency_lookup.get(str(train_no), "")
+        if runs_on:
+            text += f" Runs on: {runs_on}."
+
         if total_stops_val != "N/A":
             text += f" Total stops: {total_stops_val}."
         if total_dist != "N/A":
@@ -496,6 +515,7 @@ def load_train_route_documents(max_trains: int = 3000) -> list[Document]:
                 "source_station"     : first,
                 "destination_station": last,
                 "total_stops"        : int(total_stops_val) if str(total_stops_val).isdigit() else len(stops),
+                "runs_on"            : runs_on,
             }
         ))
 
