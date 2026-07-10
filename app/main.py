@@ -16,8 +16,12 @@ try:
 except AttributeError:
     pass
 
+import asyncio
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, File, UploadFile, Form
+from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv  # type: ignore[import-untyped]
@@ -37,6 +41,10 @@ class QuestionRequest(BaseModel):
         max_length=500,
         description="Natural language question about Indian Railways",
         json_schema_extra={"examples": ["Which trains run between Vijayawada and Hyderabad?"]},
+    )
+    session_id: str | None = Field(
+        default=None,
+        description="Optional session identifier to track train context across queries"
     )
 
 
@@ -78,6 +86,9 @@ class HealthResponse(BaseModel):
 
 # Singleton for the RAG chain (initialized at startup)
 rag_chain = None
+
+# Session context memory for tracking the last queried train number
+_session_last_train: dict[str, str] = {}
 
 
 @asynccontextmanager
@@ -139,8 +150,12 @@ app.add_middleware(
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
 )
+
+
+from fastapi.staticfiles import StaticFiles
+# Mount static web UI files
+app.mount("/web", StaticFiles(directory="web"), name="web")
 
 
 # --- Data Helpers ---
@@ -160,6 +175,29 @@ def load_csv(filename: str, directory: str = None) -> list[dict]:
         return []
     df = pd.read_csv(filepath, low_memory=False)
     return df.to_dict(orient="records")
+
+
+def extract_token_text(chunk) -> str:
+    """Extract string content from a streaming chunk, handling list-block formats."""
+    if not hasattr(chunk, "content"):
+        return str(chunk)
+    content = chunk.content
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict):
+                parts.append(block.get("text", ""))
+            elif hasattr(block, "get"):
+                try:
+                    parts.append(block.get("text", ""))
+                except Exception:
+                    parts.append(getattr(block, "text", str(block)))
+            else:
+                parts.append(getattr(block, "text", str(block)))
+        return "".join(parts)
+    return str(content)
 
 
 # --- Endpoints ---
@@ -268,11 +306,205 @@ async def ask_question_stream(request: QuestionRequest):
 
             full_answer = ""
             async for chunk in chain.astream({"context": context, "question": request.question}):
-                token = chunk.content if hasattr(chunk, "content") else str(chunk)
+                token = extract_token_text(chunk)
                 full_answer += token
                 yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
 
             # Step 3: Send done event
+            elapsed_ms = round((time.time() - t0) * 1000, 1)
+            yield f"data: {json.dumps({'type': 'done', 'response_time_ms': elapsed_ms})}\n\n"
+
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post("/ask/smart", tags=["RAG"])
+async def ask_question_smart(request: QuestionRequest, raw_request: Request):
+    """
+    Intelligent intent-routed RAG endpoint.
+    Classifies the user's question first:
+      - STATIC: Retrieves relevant documents from ChromaDB, queries LLM.
+      - LIVE: Fetches real-time status from NTES, queries LLM.
+      - HYBRID: Fetches both NTES status and ChromaDB docs, merges them, queries LLM.
+    Streams the output token-by-token.
+    """
+    from fastapi.responses import StreamingResponse
+    import json, time
+    from app.intent import classify_intent
+    from app.ntes_client import get_train_running_status, format_live_status_for_llm
+
+    if rag_chain is None:
+        raise HTTPException(status_code=503, detail="RAG chain not initialized.")
+
+    # Get session key (fallback to client IP)
+    client_ip = raw_request.client.host if raw_request.client else "unknown"
+    session_key = request.session_id or client_ip
+
+    async def event_stream():
+        try:
+            t0 = time.time()
+            question = request.question
+
+            # 1. Classify intent
+            intent_res = classify_intent(question)
+            intent = intent_res["intent"]
+            train_no = intent_res["train_no"]
+
+            # If train number isn't explicitly mentioned, try to load it from the session context
+            if not train_no:
+                train_no = _session_last_train.get(session_key)
+                if train_no:
+                    # Enrich intent details
+                    intent_res["train_no"] = train_no
+                    if intent == "STATIC" and "stops" in question.lower() or "route" in question.lower() or "schedule" in question.lower():
+                        # If asking about stops/route/schedule dynamically, upgrade to HYBRID to include both details
+                        intent = "HYBRID"
+
+            # If a train number was explicitly matched or resolved, save it to session
+            if train_no:
+                _session_last_train[session_key] = train_no
+
+            # 2. Retrieve data based on intent
+            docs = []
+            live_status = None
+            live_context = ""
+            sources = []
+            warnings = []
+
+            is_pnr = intent_res.get("is_pnr", False)
+            pnr_val = intent_res.get("pnr")
+
+            if is_pnr and pnr_val:
+                from app.pnr_client import get_pnr_status, format_pnr_status_for_llm
+                try:
+                    pnr_status = get_pnr_status(pnr_val)
+                    if pnr_status.get("success"):
+                        live_context = format_pnr_status_for_llm(pnr_status)
+                        sources.insert(0, {
+                            "type": "pnr_status",
+                            "relevance_score": 1.0,
+                            "pnr": pnr_val,
+                            "train_no": pnr_status.get("train_no", ""),
+                            "train_name": pnr_status.get("train_name", ""),
+                            "date_of_journey": pnr_status.get("date_of_journey", ""),
+                            "chart_prepared": pnr_status.get("chart_prepared", False),
+                            "passengers": pnr_status.get("passengers", []),
+                            "source": pnr_status.get("source", "ConfirmTkt"),
+                            "fetched_at": pnr_status.get("fetched_at", "")
+                        })
+                        # Extract and save train number from the verified PNR status to session
+                        retrieved_train = pnr_status.get("train_no")
+                        if retrieved_train:
+                            _session_last_train[session_key] = retrieved_train
+                    else:
+                        warnings.append(f"PNR status fetch failed: {pnr_status.get('error')}")
+                        live_context = f"⚠️ LIVE PNR STATUS UNAVAILABLE: {pnr_status.get('error')}"
+                except Exception as exc:
+                    warnings.append(f"PNR status fetch failed due to error: {str(exc)}")
+                    live_context = f"⚠️ LIVE PNR STATUS UNAVAILABLE due to error: {str(exc)}"
+            else:
+                # Determine static retrieval
+                needs_static = (intent in ("STATIC", "HYBRID"))
+                # Determine live status fetch
+                needs_live = (intent in ("LIVE", "HYBRID")) and train_no is not None
+
+                # Executing static retrieval if needed
+                if needs_static:
+                    # Append train number to retrieval question if it's not present in original query
+                    query_for_retrieval = question
+                    if train_no and train_no not in question:
+                        query_for_retrieval = f"{question} train {train_no}"
+                    
+                    docs = rag_chain.retriever.retrieve(query_for_retrieval)
+                    from app.rag import get_sources
+                    sources = get_sources(docs)
+
+                # Executing live status fetch if needed
+                if needs_live:
+                    try:
+                        live_status = get_train_running_status(train_no)
+                        if live_status.get("success"):
+                            live_context = format_live_status_for_llm(live_status)
+                            # Add a special LIVE source entry
+                            sources.insert(0, {
+                                "type": "live_status",
+                                "relevance_score": 1.0,
+                                "train_no": train_no,
+                                "train_name": live_status.get("train_name", ""),
+                                "status": live_status.get("status", ""),
+                                "current_station": live_status.get("current_station", ""),
+                                "source": live_status.get("source", "NTES"),
+                                "fetched_at": live_status.get("fetched_at", "")
+                            })
+                        else:
+                            warnings.append(f"Live status fetch failed: {live_status.get('error')}")
+                    except Exception as exc:
+                        warnings.append(f"Live status fetch failed due to error: {str(exc)}")
+
+                # Fallback if live status was needed but failed / was not found
+                if needs_live and not live_context:
+                    live_context = (
+                        f"⚠️ LIVE RUNNING STATUS UNAVAILABLE for train {train_no or 'unknown'}.\n"
+                        "Please rely on static scheduled timetable database details only.\n"
+                    )
+
+            # Compute avg relevance score
+            scores = [s["relevance_score"] for s in sources if isinstance(s.get("relevance_score"), (int, float))]
+            avg_score = round(sum(scores) / len(scores), 4) if scores else 0.0
+
+            # Send metadata SSE event
+            meta = {
+                "type": "meta",
+                "intent": intent,
+                "confidence": intent_res["confidence"],
+                "train_no": train_no,
+                "num_documents_retrieved": len(docs),
+                "avg_relevance_score": avg_score,
+                "sources": sources,
+                "warnings": warnings,
+                "llm_model": os.getenv("GEMINI_MODEL" if os.getenv("LLM_PROVIDER") == "gemini" else "LOCAL_MODEL_NAME", "gemini-2.5-flash"),
+                "embedding_model": "all-MiniLM-L6-v2",
+            }
+            yield f"data: {json.dumps(meta)}\n\n"
+
+            # 3. Format prompt context
+            from app.rag import SYSTEM_PROMPT, HUMAN_PROMPT
+            from langchain_core.prompts import ChatPromptTemplate
+            from app.rag import format_docs
+
+            static_context = format_docs(docs) if docs else "No static database context."
+
+            # Merge static + live contexts into final prompt context
+            context_parts = []
+            if live_context:
+                context_parts.append(live_context)
+            if static_context:
+                context_parts.append(f"=== DATABASE RULES/TIMETABLES (STATIC) ===\n{static_context}")
+
+            merged_context = "\n\n".join(context_parts)
+
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", SYSTEM_PROMPT),
+                ("human", HUMAN_PROMPT),
+            ])
+            chain = prompt | rag_chain.llm
+
+            full_answer = ""
+            async for chunk in chain.astream({"context": merged_context, "question": question}):
+                token = extract_token_text(chunk)
+                full_answer += token
+                yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
+
+            # Send done event
             elapsed_ms = round((time.time() - t0) * 1000, 1)
             yield f"data: {json.dumps({'type': 'done', 'response_time_ms': elapsed_ms})}\n\n"
 
@@ -436,6 +668,16 @@ async def ask_with_file(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
+
+
+@app.get("/live/pnr/{pnr}", tags=["Live Status"])
+async def live_pnr_status(pnr: str):
+    """Fetch live PNR status from ConfirmTkt or fallback scrapers."""
+    from app.pnr_client import get_pnr_status
+    res = get_pnr_status(pnr)
+    if not res.get("success"):
+        raise HTTPException(status_code=400, detail=res.get("error", "Failed to fetch PNR status"))
+    return res
 
 
 @app.get("/trains", tags=["Data"])

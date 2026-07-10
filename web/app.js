@@ -90,16 +90,74 @@ function buildRouteViz(stations) {
     </div>`;
 }
 
-// ─── Source cards ─────────────────────────────────────────
+
+/** Build ticket status card HTML for PNR status */
+function buildTicketCard(s) {
+  if (!s || s.type !== 'pnr_status') return '';
+  
+  const chartBadge = s.chart_prepared
+    ? `<span class="pnr-badge chart-yes">Chart Prepared</span>`
+    : `<span class="pnr-badge chart-no">Chart Not Prepared</span>`;
+    
+  const passengerRows = (s.passengers || []).map(p => {
+    const isWL = String(p.current_status || '').toLowerCase().includes('w/l') || String(p.current_status || '').toLowerCase().includes('wl');
+    const isRAC = String(p.current_status || '').toLowerCase().includes('rac');
+    const statusCls = isWL ? 'wl' : isRAC ? 'rac' : 'cnf';
+    const seatInfo = p.coach ? `${esc(p.coach)} / ${esc(p.berth)}` : '—';
+    return `
+      <div class="pnr-passenger-row">
+        <span class="pnr-p-no">Passenger ${esc(p.passenger_no)}</span>
+        <span class="pnr-p-status booking">${esc(p.booking_status)}</span>
+        <span class="pnr-p-status current ${statusCls}">${esc(p.current_status)}</span>
+        <span class="pnr-p-seat">${esc(seatInfo)}</span>
+      </div>`;
+  }).join('');
+
+  return `
+    <div class="pnr-card">
+      <div class="pnr-header">
+        <div class="pnr-title">🎫 Booking Details (PNR: ${esc(s.pnr)})</div>
+        ${chartBadge}
+      </div>
+      <div class="pnr-body">
+        <div class="pnr-meta-grid">
+          <div><span class="lbl">Train:</span> <strong class="val">${esc(s.train_no)} - ${esc(s.train_name)}</strong></div>
+          <div><span class="lbl">Date of Journey:</span> <strong class="val">${esc(s.date_of_journey)}</strong></div>
+        </div>
+        <div class="pnr-passengers-list">
+          <div class="pnr-passenger-header">
+            <span>Passenger</span>
+            <span>Booking Status</span>
+            <span>Current Status</span>
+            <span>Coach/Seat</span>
+          </div>
+          ${passengerRows || '<div style="padding:1rem;text-align:center;color:var(--ink2)">No passenger details found.</div>'}
+        </div>
+      </div>
+    </div>`;
+}
+
 const TYPE_LABEL = {
   train:       '🚆 Train',
   train_route: '🗺 Route',
   station:     '🏠 Station',
   rule:        '📋 Rule',
   reference:   '📚 Ref',
+  live_status: '🔴 Live',
+  pnr_status:  '🎫 PNR Status',
 };
 
 function sourceTitle(s) {
+  if (s.type === 'pnr_status') {
+    return `PNR ${s.pnr} (${s.train_name || s.train_no || 'Ticket'})`.trim();
+  }
+  if (s.type === 'live_status') {
+    const details = [];
+    if (s.current_station) details.push(`at ${s.current_station}`);
+    if (s.status) details.push(s.status);
+    const detailStr = details.length ? ` - ${details.join(', ')}` : '';
+    return `${s.train_no ? '#' + s.train_no : 'Train'} ${s.train_name || ''}${detailStr}`.trim();
+  }
   if (s.train_no || s.train_name)
     return `${s.train_no ? '#' + s.train_no : ''} ${s.train_name || ''}`.trim();
   if (s.station_name || s.station_code)
@@ -212,6 +270,13 @@ function replaceWithAnswer(msgId, result) {
     routeVizHtml = buildRouteViz(stations);
   }
 
+  // Detect PNR doc in sources
+  const pnrDoc = result.sources?.find(s => s.type === 'pnr_status');
+  let pnrCardHtml = '';
+  if (pnrDoc) {
+    pnrCardHtml = buildTicketCard(pnrDoc);
+  }
+
   el.querySelector('.answer-bubble').outerHTML = `
     <div class="answer-bubble">
       <div class="ai-avatar">🚂</div>
@@ -219,6 +284,7 @@ function replaceWithAnswer(msgId, result) {
         <div class="answer-card">
           <div class="answer-text">${renderMarkdown(result.answer.trim())}</div>
           ${routeVizHtml}
+          ${pnrCardHtml}
           <div class="sources-section">
             <div class="sources-heading">Sources (${result.num_documents_retrieved ?? result.sources?.length ?? 0})</div>
             ${buildSourceBadges(result.sources)}
@@ -310,7 +376,7 @@ async function submitQuestion(question) {
   submitBtn.disabled = true;
 
   try {
-    const response = await fetch(`${getBase()}/ask/stream`, {
+    const response = await fetch(`${getBase()}/ask/smart`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ question }),
@@ -328,6 +394,8 @@ async function submitQuestion(question) {
     let sources = [];
     let stats = {};
     let hasInitializedBubble = false;
+    let warnings = [];
+    let intent = 'STATIC';
 
     // Locate the message element we just created
     const el = document.getElementById(msgId);
@@ -352,19 +420,27 @@ async function submitQuestion(question) {
       if (payload.type === 'meta') {
         // Meta event: received sources, document count, model info
         sources = payload.sources || [];
+        warnings = payload.warnings || [];
+        intent = payload.intent || 'STATIC';
         stats = {
           numDocs: payload.num_documents_retrieved,
           avgScore: payload.avg_relevance_score,
-          llmModel: payload.llm_model,
+          llmModel: `${payload.llm_model} (${intent})`,
           embedModel: payload.embedding_model
         };
         
+        // Build warning banner if present
+        const warningHtml = warnings.length 
+          ? `<div class="warning-banner">⚠️ ${esc(warnings.join(', '))}</div>`
+          : '';
+
         // Render the shell of the answer card immediately so we can stream into it
         answerContentEl.innerHTML = `
           <div class="answer-card">
+            ${warningHtml}
             <div class="answer-text"></div>
             <div class="sources-section" style="display:none">
-              <div class="sources-heading">Sources (${stats.numDocs})</div>
+              <div class="sources-heading">Sources (${sources.length})</div>
               <div class="sources-list-container"></div>
             </div>
           </div>`;
@@ -401,6 +477,16 @@ async function submitQuestion(question) {
               // Insert route viz after the answer text but before sources
               const textEl = cardEl.querySelector('.answer-text');
               if (textEl) textEl.insertAdjacentHTML('afterend', routeVizHtml);
+            }
+          }
+
+          // Render PNR status card if applicable
+          const pnrDoc = sources.find(s => s.type === 'pnr_status');
+          if (pnrDoc) {
+            const pnrCardHtml = buildTicketCard(pnrDoc);
+            if (pnrCardHtml) {
+              const textEl = cardEl.querySelector('.answer-text');
+              if (textEl) textEl.insertAdjacentHTML('afterend', pnrCardHtml);
             }
           }
 
