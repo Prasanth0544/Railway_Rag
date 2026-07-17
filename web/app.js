@@ -257,6 +257,50 @@ function appendLoading(question) {
   return id;
 }
 
+/** appendLoading variant for file uploads — shows thumbnail or PDF icon in the user bubble */
+function appendLoadingWithFile(question, file, dataUrl) {
+  const id = `msg-${Date.now()}`;
+  const el = document.createElement('div');
+  el.className = 'chat-message';
+  el.id = id;
+
+  const isPdf = file.type === 'application/pdf';
+  const isImage = file.type.startsWith('image/');
+
+  // Build the file preview inside the user bubble
+  const filePreviewHtml = isPdf
+    ? `<div style="display:flex;align-items:center;gap:.5rem;margin-top:.5rem;padding:.5rem .75rem;background:rgba(255,255,255,.07);border-radius:.5rem;font-size:.82rem;color:var(--ink2)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        <span>${esc(file.name)}</span>
+      </div>`
+    : (isImage && dataUrl)
+      ? `<img src="${dataUrl}" alt="${esc(file.name)}" style="display:block;max-width:180px;max-height:140px;border-radius:.6rem;margin-top:.5rem;object-fit:cover;border:2px solid rgba(255,255,255,.12)">`
+      : '';
+
+  const questionLine = question && question !== 'Analyze this file'
+    ? `<div class="question-text" style="margin-bottom:.3rem">${esc(question)}</div>`
+    : '';
+
+  el.innerHTML = `
+    <div class="question-bubble">
+      ${questionLine}
+      ${filePreviewHtml}
+    </div>
+    <div class="answer-bubble loading-bubble">
+      <div class="ai-avatar">🚂</div>
+      <div class="answer-content">
+        <div class="answer-card">
+          <div class="typing-dots"><span></span><span></span><span></span></div>
+          <span style="color:var(--ink2);font-size:.88rem">Analysing file with Gemini Vision…</span>
+        </div>
+      </div>
+    </div>`;
+  chatArea.appendChild(el);
+  chatArea.scrollTop = chatArea.scrollHeight;
+  return id;
+}
+
+
 function replaceWithAnswer(msgId, result) {
   const el = document.getElementById(msgId);
   if (!el) return;
@@ -658,8 +702,18 @@ fileRemoveEl.addEventListener('click', clearAttachedFile);
 async function submitWithFile(question, file) {
   hideEmpty();
 
-  // Create user question bubble with file indicator
-  const msgId = appendLoading(`${question}\n📎 ${file.name}`);
+  // Read file as dataURL for thumbnail (images only; skip for PDFs to avoid large strings)
+  let dataUrl = null;
+  if (file.type.startsWith('image/')) {
+    dataUrl = await new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = (e) => resolve(e.target.result);
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(file);
+    });
+  }
+
+  const msgId = appendLoadingWithFile(question, file, dataUrl);
   submitBtn.disabled = true;
 
   try {
@@ -710,6 +764,7 @@ async function submitWithFile(question, file) {
     questionInput.focus();
   }
 }
+
 
 // ─── Theme toggle ─────────────────────────────────────────
 themeToggle.addEventListener('click', () => {

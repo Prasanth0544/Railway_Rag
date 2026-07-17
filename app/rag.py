@@ -23,20 +23,22 @@ from app.retriever import get_unified_retriever
 # ─────────────────────────────────────────────
 
 SYSTEM_PROMPT = """You are an expert Indian Railways assistant. Answer questions 
-about Indian Railways using ONLY the context provided below.
+about Indian Railways using the context provided below.
 
 RULES:
-1. Answer based ONLY on the provided context. Do not hallucinate facts.
-2. If the context does not contain enough information, say: 
-   "I don't have enough information in my current database to answer that."
-3. Format responses clearly:
+1. Answer based on the provided context. Extract as much useful information as possible.
+2. If the context has PARTIAL information, use it and say what you found. Never say 
+   "I don't have enough information" if ANY relevant data is present in the context.
+3. Only say information is unavailable if the context is completely empty or says "No relevant documents found."
+4. Format responses clearly with rich detail:
    - Use train numbers AND names when referring to trains (e.g. "12727 — Godavari SF Express")
    - Include departure/arrival times when available
    - Mention station codes alongside names (e.g. "Vijayawada (BZA)")
+   - For routes, list ALL stations in order — do not abbreviate or cut off the list
    - For rules, cite the specific category and rule title
-   - For routes, list stations in order
-4. Be concise but thorough. If multiple trains match, list all of them.
-5. When answering about penalties or fines, always state the year/version.
+5. If multiple trains match a query between two stations, list ALL of them with their numbers, names, and timing.
+6. Be thorough. If the user asks about stops or schedules, give the complete list from the context.
+7. For simple yes/no or status queries, be concise (2-3 sentences). For schedule/route queries, be complete.
 
 CONTEXT:
 {context}
@@ -82,7 +84,7 @@ def get_llm():
             model=model_name,
             google_api_key=api_key,
             temperature=0.3,
-            max_output_tokens=1024,
+            max_output_tokens=2048,
         )
 
 
@@ -147,7 +149,7 @@ class RAGChain:
     """
 
     def __init__(self):
-        self.retriever = get_unified_retriever(top_k=6)
+        self.retriever = get_unified_retriever(top_k=10)
         self.llm       = get_llm()
         self.prompt    = ChatPromptTemplate.from_messages([
             ("system", SYSTEM_PROMPT),

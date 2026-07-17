@@ -9,17 +9,21 @@ Classifies user questions into:
 Uses optimized keyword checklists and regex rules for high performance and accuracy.
 """
 
-import re# ── Keywords defining LIVE queries ──────────────────────────────
-LIVE_KEYWORDS = [
+
+import re
+import threading
+
+# ── Keywords defining LIVE queries ──────────────────────────────
+LIVE_KEYWORDS = frozenset([
     "live", "running", "status", "spot", "where", "late", "delay", "delayed",
     "arrive", "arriving", "arrived", "arrives", "departure", "departing", "departed", "departs",
     "platform", "pf", "cancelled", "running status", "is it on time", "where is", "expected arrival",
     "track", "reach", "reaching", "reached", "reaches", "when", "location", "current", "position",
     "start", "started", "starts", "starting", "left", "commence", "commenced", "commencing", "run", "runs"
-]
+])
 
 # ── Keywords defining STATIC queries ────────────────────────────
-STATIC_KEYWORDS = [
+STATIC_KEYWORDS = frozenset([
     "cancel", "cancellation", "refund", "charge", "charges", "fee", "fees",
     "rule", "rules", "luggage", "limit", "allowance", "penalty", "fine",
     "tte", "duty", "duties", "policy", "policies", "weight", "extra bag",
@@ -27,10 +31,20 @@ STATIC_KEYWORDS = [
     "stops of", "schedule of", "timetable", "route of", "passing through",
     "how to book", "senior citizen", "concession", "tatkal", "premium tatkal",
     "stop", "stops", "timetable", "schedule"
-]
+])
 
 # ── Station keywords indicating spatial/routing queries ─────────
-ROUTING_KEYWORDS = ["between", "from", "to", "via", "through"]
+ROUTING_KEYWORDS = frozenset(["between", "from", "to", "via", "through"])
+
+# ── Module-level stop words (reused in has_station_name) ────────
+_HAS_STATION_STOP_WORDS = frozenset([
+    "is", "in", "to", "on", "or", "now", "at", "for", "the", "and", "train", "trains",
+    "station", "stations", "route", "routes", "status", "spot", "where", "late", "delay",
+    "arrive", "departure", "platform", "pf", "track", "reach", "when", "location", "current",
+    "time", "what", "how", "running", "today", "tomorrow", "yesterday", "daily", "weekly",
+    "will", "expected", "supposed"
+])
+
 
 
 def extract_train_number(query: str) -> str | None:
@@ -56,63 +70,55 @@ def extract_station_code(query: str) -> str | None:
 
 _station_tokens_cached = None
 _station_codes_cached = None
+_station_cache_lock = threading.Lock()  # prevents duplicate loads under concurrent requests
 
 def get_station_tokens_and_codes():
     global _station_tokens_cached, _station_codes_cached
     if _station_tokens_cached is not None:
         return _station_tokens_cached, _station_codes_cached
-    
-    tokens = set()
-    codes = set()
-    try:
-        from scripts.preprocess import build_station_lookup
-        lookup = build_station_lookup()
-        ignore_tokens = {
-            "junction", "jn", "junctions", "cabin", "road", "halt", "crossing", 
-            "station", "town", "city", "north", "south", "east", "west", "central", 
-            "new", "old", "and", "the", "via", "pass", "under", "over", "bridge"
-        }
-        for code, info in lookup.items():
-            codes.add(code.lower())
-            name_parts = re.findall(r"\b[a-zA-Z]{3,}\b", info.get("name", "").lower())
-            for part in name_parts:
-                if part not in ignore_tokens:
-                    tokens.add(part)
-            for aka in info.get("aka", []):
-                aka_parts = re.findall(r"\b[a-zA-Z]{3,}\b", aka.lower())
-                for part in aka_parts:
+
+    with _station_cache_lock:
+        # Double-check after acquiring lock (another thread may have loaded it)
+        if _station_tokens_cached is not None:
+            return _station_tokens_cached, _station_codes_cached
+
+        tokens = set()
+        codes = set()
+        try:
+            from scripts.preprocess import build_station_lookup
+            lookup = build_station_lookup()
+            ignore_tokens = frozenset({
+                "junction", "jn", "junctions", "cabin", "road", "halt", "crossing",
+                "station", "town", "city", "north", "south", "east", "west", "central",
+                "new", "old", "and", "the", "via", "pass", "under", "over", "bridge"
+            })
+            for code, info in lookup.items():
+                codes.add(code.lower())
+                name_parts = re.findall(r"\b[a-zA-Z]{3,}\b", info.get("name", "").lower())
+                for part in name_parts:
                     if part not in ignore_tokens:
                         tokens.add(part)
-    except Exception:
-        pass
-    _station_tokens_cached = tokens
-    _station_codes_cached = codes
-    return tokens, codes
+                for aka in info.get("aka", []):
+                    aka_parts = re.findall(r"\b[a-zA-Z]{3,}\b", aka.lower())
+                    for part in aka_parts:
+                        if part not in ignore_tokens:
+                            tokens.add(part)
+        except Exception:
+            pass
+        _station_tokens_cached = tokens
+        _station_codes_cached = codes
+    return _station_tokens_cached, _station_codes_cached
 
 
 def has_station_name(query: str) -> bool:
     """Check if any word in the query is a valid station name or code."""
     try:
         tokens, codes = get_station_tokens_and_codes()
-        
-        # Extract word tokens from query
-        query_words = set(re.findall(r"\b[a-zA-Z]{2,}\b", query.lower()))
-        
-        # Stop words to ignore so they don't trigger station detection
-        stop_words = {
-            "is", "in", "to", "on", "or", "now", "at", "for", "the", "and", "train", "trains",
-            "station", "stations", "route", "routes", "status", "spot", "where", "late", "delay",
-            "arrive", "departure", "platform", "pf", "track", "reach", "when", "location", "current",
-            "time", "what", "how", "running", "today", "tomorrow", "yesterday", "daily", "weekly",
-            "will", "expected", "supposed"
-        }
-        query_words = query_words - stop_words
-        
+        query_words = set(re.findall(r"\b[a-zA-Z]{2,}\b", query.lower())) - _HAS_STATION_STOP_WORDS
         for word in query_words:
             if word in codes or word in tokens:
                 return True
-    except Exception as e:
-        # Fallback to simple capitalized words regex
+    except Exception:
         words = re.findall(r"\b[A-Z][a-z]+\b", query)
         filtered = [w for w in words if w.lower() not in ("train", "express", "mail", "superfast", "running", "status", "what", "where", "how", "when", "is", "the")]
         if filtered:
@@ -169,14 +175,9 @@ def classify_intent(query: str) -> dict:
         live_score += 0.7
         reasons.append("Contains train number and transit/commencement indicator ('start' / 'depart' / 'leave' / 'run' / 'cancel')")
 
-    # 2. Whole word matching helper
-    def count_word_matches(words_list, text):
-        matches = []
-        for kw in words_list:
-            pattern = rf"\b{re.escape(kw)}\b"
-            if re.search(pattern, text):
-                matches.append(kw)
-        return matches
+    # 2. Pre-compiled whole word matcher
+    def count_word_matches(words_set, text):
+        return [kw for kw in words_set if re.search(rf"\b{re.escape(kw)}\b", text)]
 
     live_matches = count_word_matches(LIVE_KEYWORDS, query_lower)
     static_matches = count_word_matches(STATIC_KEYWORDS, query_lower)

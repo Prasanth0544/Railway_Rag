@@ -31,6 +31,14 @@ import pandas as pd  # type: ignore[import-untyped]
 # Load environment variables before anything else
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
 
+# --- Module-level app sub-imports (avoids per-request import overhead) ---
+from app.intent import classify_intent                                          # noqa: E402
+from app.ntes_client import get_train_running_status, format_live_status_for_llm  # noqa: E402
+from app.pnr_client import get_pnr_status, format_pnr_status_for_llm           # noqa: E402
+from app.rag import SYSTEM_PROMPT, HUMAN_PROMPT, format_docs, get_sources      # noqa: E402
+from langchain_core.prompts import ChatPromptTemplate                           # noqa: E402
+
+
 
 # --- Pydantic Models ---
 
@@ -89,6 +97,8 @@ rag_chain = None
 
 # Session context memory for tracking the last queried train number
 _session_last_train: dict[str, str] = {}
+_SESSION_MAX_SIZE = 1000  # max unique sessions to keep in memory
+
 
 
 @asynccontextmanager
@@ -372,6 +382,11 @@ async def ask_question_smart(request: QuestionRequest, raw_request: Request):
             # If a train number was explicitly matched or resolved, save it to session
             if train_no:
                 _session_last_train[session_key] = train_no
+                # Guard against unbounded session memory growth
+                if len(_session_last_train) > _SESSION_MAX_SIZE:
+                    # Remove oldest 200 entries
+                    for k in list(_session_last_train.keys())[:200]:
+                        del _session_last_train[k]
 
             # 2. Retrieve data based on intent
             docs = []
@@ -384,7 +399,6 @@ async def ask_question_smart(request: QuestionRequest, raw_request: Request):
             pnr_val = intent_res.get("pnr")
 
             if is_pnr and pnr_val:
-                from app.pnr_client import get_pnr_status, format_pnr_status_for_llm
                 try:
                     pnr_status = get_pnr_status(pnr_val)
                     if pnr_status.get("success"):
@@ -562,98 +576,131 @@ async def ask_with_file(
 
     try:
         t0 = time.time()
+        import re, io, PIL.Image
 
         # Configure Gemini
         genai.configure(api_key=api_key)
         model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
         model = genai.GenerativeModel(model_name)
 
-        # ── Step 1: Extract intent from the file (quick Gemini Vision call) ──────
-        # Always run a quick extraction to get the real question from the image/PDF,
-        # then combine with any typed question for retrieval.
-        import re, io
         effective_question = question.strip()
 
-        # Always extract from the file so we can retrieve relevant ChromaDB context
-        extraction_prompt = (
-            "Look at this file carefully. "
-            "If it contains a question or query (e.g. text written on a whiteboard, "
-            "screenshot of a typed question, or a railway ticket), "
-            "extract and return ONLY that question or query as plain text. "
-            "If it is a railway ticket, return: 'Train ticket for train [number] from [source] to [destination]'. "
-            "If you cannot determine a question, return: 'Analyze this railway document and describe what you see.'"
+        # ── Step 1: Single Gemini call — describe + classify railway relevance ──
+        # Returns a structured block we parse without a second API call.
+        classification_prompt = (
+            "Analyze this file carefully and respond in EXACTLY this format (no extra text):\n\n"
+            "DESCRIPTION: <1-2 sentence description of what is in the image/PDF>\n"
+            "IS_RAILWAY: YES or NO\n"
+            "QUERY: <if railway-related, the core railway topic or question; otherwise leave blank>\n\n"
+            "Guidelines:\n"
+            "- IS_RAILWAY is YES only if the content is about Indian Railways: train tickets, "
+            "timetables, PNR status, station info, railway rules, track maps, fare charts, etc.\n"
+            "- IS_RAILWAY is NO for anything else: food, architecture, software diagrams, "
+            "computer science topics, personal photos, nature, etc.\n"
+            "- DESCRIPTION must always be filled in (even for non-railway content)."
         )
+
+        # Build the classification request (image or PDF)
         if content_type == "application/pdf":
-            ext_resp = model.generate_content(
-                [extraction_prompt, {"mime_type": "application/pdf", "data": file_bytes}]
+            cls_resp = model.generate_content(
+                [classification_prompt, {"mime_type": "application/pdf", "data": file_bytes}],
+                generation_config={"temperature": 0.1, "max_output_tokens": 256},
             )
         else:
-            import PIL.Image
-            img_for_extract = PIL.Image.open(io.BytesIO(file_bytes))
-            ext_resp = model.generate_content([extraction_prompt, img_for_extract])
-        extracted = ext_resp.text.strip() if ext_resp.text else ""
+            pil_img = PIL.Image.open(io.BytesIO(file_bytes))
+            cls_resp = model.generate_content(
+                [classification_prompt, pil_img],
+                generation_config={"temperature": 0.1, "max_output_tokens": 256},
+            )
 
-        # Merge: prefer user's typed question + extracted context for retrieval
-        if effective_question and extracted:
-            retrieval_query = f"{effective_question} {extracted}"
-        elif extracted:
-            retrieval_query = extracted
-            effective_question = extracted  # use extracted as the question if nothing typed
-        else:
-            retrieval_query = effective_question or "Indian railway information"
+        cls_text = cls_resp.text.strip() if cls_resp.text else ""
+        print(f"[UPLOAD] Classification response:\n{cls_text}")
 
-        # ── Step 2: Use merged query for ChromaDB retrieval ────────────────
+        # Parse structured response
+        def _parse_field(label: str, text: str) -> str:
+            m = re.search(rf"^{label}:\s*(.+)$", text, re.MULTILINE | re.IGNORECASE)
+            return m.group(1).strip() if m else ""
+
+        description  = _parse_field("DESCRIPTION", cls_text)
+        is_railway   = _parse_field("IS_RAILWAY", cls_text).upper().startswith("YES")
+        extracted_q  = _parse_field("QUERY", cls_text)
+
+        elapsed_ms = round((time.time() - t0) * 1000, 1)
+
+        # ── Step 2: Non-railway content → skip ChromaDB, return closed-domain message ──
+        if not is_railway:
+            print(f"[UPLOAD] Non-railway content detected — skipping ChromaDB retrieval")
+            answer_text = (
+                f"📋 **I can see:** {description}\n\n"
+                "⚠️ **This is a closed-domain assistant for Indian Railways only.**\n"
+                "The uploaded file doesn't appear to contain railway-related information. "
+                "Please upload a railway ticket, timetable, station screenshot, or fare chart — "
+                "or type a railway-related question directly."
+            )
+            return {
+                "question": question or "Analyze this file",
+                "answer": answer_text,
+                "sources": [],
+                "num_documents_retrieved": 0,
+                "response_time_ms": elapsed_ms,
+                "avg_relevance_score": 0.0,
+                "llm_model": model_name,
+                "embedding_model": "all-MiniLM-L6-v2",
+                "file_name": file.filename,
+                "file_type": content_type,
+                "mode": "multi-modal",
+                "railway_related": False,
+            }
+
+        # ── Step 3: Railway content → ChromaDB retrieval ──────────────────────
+        retrieval_query = " ".join(filter(None, [effective_question, extracted_q, description]))
         rag_context = ""
         sources = []
-        if rag_chain:
+        if rag_chain and retrieval_query.strip():
             docs = rag_chain.retriever.retrieve(retrieval_query)
             if docs:
-                from app.rag import format_docs, get_sources
                 rag_context = format_docs(docs)
                 sources = get_sources(docs)
 
+        # ── Step 4: Full Gemini Vision answer for railway content ─────────────
         system_instruction = (
-            "You are an expert Indian Railways assistant. Analyze the uploaded file "
-            "(image or PDF) and answer the user's question about it. "
-            "Be thorough and extract all relevant details.\n"
+            "You are an expert Indian Railways assistant (closed domain).\n"
+            "The user has uploaded a railway-related file.\n\n"
+            f"What you can see in the file: {description}\n\n"
+            "INSTRUCTIONS:\n"
+            "1. Start your answer by briefly confirming what you see in the file (1 sentence).\n"
+            "2. Then answer the user's question thoroughly using the file content.\n"
+            "3. Use train numbers, station codes, times, and PNR details where visible.\n"
+            "4. If additional database context is provided below, use it to enrich your answer.\n"
         )
         if rag_context:
             system_instruction += (
-                "\nAdditional railway database context (use if relevant):\n"
-                + rag_context[:4000]  # cap context size
+                "\n=== RAILWAY DATABASE CONTEXT (use if relevant) ===\n"
+                + rag_context[:4000]
             )
 
-        # Send to Gemini Vision
-        import PIL.Image
-        import io
+        final_question = effective_question or extracted_q or "Please analyse this railway document."
 
         if content_type == "application/pdf":
-            # For PDFs, upload the raw bytes
             response = model.generate_content(
-                [
-                    system_instruction,
-                    {"mime_type": "application/pdf", "data": file_bytes},
-                    question,
-                ],
+                [system_instruction, {"mime_type": "application/pdf", "data": file_bytes}, final_question],
                 generation_config={"temperature": 0.3, "max_output_tokens": 2048},
             )
         else:
-            # For images, open with PIL
             image = PIL.Image.open(io.BytesIO(file_bytes))
             response = model.generate_content(
-                [system_instruction, image, effective_question],
+                [system_instruction, image, final_question],
                 generation_config={"temperature": 0.3, "max_output_tokens": 2048},
             )
 
         elapsed_ms = round((time.time() - t0) * 1000, 1)
         answer_text = response.text if response.text else "Could not process the file."
 
-        # Compute avg relevance score from sources
         scores = [s["relevance_score"] for s in sources if isinstance(s.get("relevance_score"), (int, float))]
         avg_score = round(sum(scores) / len(scores), 4) if scores else 0.0
 
         return {
-            "question": question,
+            "question": question or final_question,
             "answer": answer_text,
             "sources": sources,
             "num_documents_retrieved": len(sources),
@@ -664,6 +711,7 @@ async def ask_with_file(
             "file_name": file.filename,
             "file_type": content_type,
             "mode": "multi-modal",
+            "railway_related": True,
         }
 
     except Exception as e:

@@ -9,6 +9,11 @@ import requests
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 
+try:
+    from bs4 import BeautifulSoup  # type: ignore[import-untyped]
+except ImportError:
+    BeautifulSoup = None  # type: ignore[assignment,misc]
+
 # Cache config
 CACHE_TTL_SECONDS = 600  # 10 minutes
 _pnr_cache: Dict[str, Dict[str, Any]] = {}
@@ -71,10 +76,16 @@ def _get_from_cache(pnr: str) -> Optional[dict]:
 
 
 def _set_cache(pnr: str, data: dict):
+    # Evict oldest entries when cache grows too large
+    if len(_pnr_cache) >= 500:
+        oldest_keys = sorted(_pnr_cache, key=lambda k: _pnr_cache[k]["fetched_at"])[:50]
+        for k in oldest_keys:
+            del _pnr_cache[k]
+    now = datetime.now()
     _pnr_cache[pnr] = {
         "data": data,
-        "fetched_at": datetime.now(),
-        "expires_at": datetime.now() + timedelta(seconds=CACHE_TTL_SECONDS)
+        "fetched_at": now,
+        "expires_at": now + timedelta(seconds=CACHE_TTL_SECONDS)
     }
 
 
@@ -126,7 +137,9 @@ def _fetch_railyatri_scraper(pnr: str) -> Optional[dict]:
         resp = requests.get(url, headers=HEADERS, timeout=10)
         print(f"[PNR] RailYatri URL: {url} -> HTTP {resp.status_code}")
         if resp.status_code == 200 and resp.text:
-            from bs4 import BeautifulSoup
+            if BeautifulSoup is None:
+                print("[PNR] BeautifulSoup not available — skipping RailYatri scrape")
+                return None
             soup = BeautifulSoup(resp.text, "html.parser")
             
             # --- Robust Selector Parsing ---
