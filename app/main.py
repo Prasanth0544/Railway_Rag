@@ -180,7 +180,7 @@ app.mount("/web", StaticFiles(directory="web"), name="web")
 DATA_DIR             = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
 DATA_COLLECTIONS_DIR = os.getenv(
     "DATA_COLLECTIONS_DIR",
-    r"C:\Users\prasa\Documents\RailWayData\csv_of_railway\data_collections",
+    os.path.join(os.path.dirname(os.path.dirname(__file__)), "data"),  # fallback to ./data/
 )
 
 
