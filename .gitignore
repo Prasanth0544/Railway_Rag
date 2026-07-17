@@ -4,7 +4,7 @@
 venv/
 
 # ChromaDB persistent storage
-chroma_db/
+# chroma_db tracked via Git LFS
 
 # Python
 __pycache__/
