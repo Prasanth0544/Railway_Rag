@@ -4,7 +4,7 @@ services:
     env: python
     region: singapore          # Closest to India
     plan: free
-    buildCommand: pip install -r requirements.txt
+    buildCommand: "chmod +x build.sh && bash build.sh"
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: GOOGLE_API_KEY
