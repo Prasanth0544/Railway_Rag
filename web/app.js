@@ -18,6 +18,7 @@ const chipButtons     = document.querySelectorAll('[data-question]');
 
 const STORAGE_KEY = 'railway-rag-api';
 const THEME_KEY   = 'railway-rag-theme';
+const CHAT_KEY    = 'railway-rag-chat';
 
 // File upload refs
 const fileInput    = document.getElementById('fileInput');
@@ -28,6 +29,12 @@ const fileSizeEl   = document.getElementById('fileSize');
 const fileRemoveEl = document.getElementById('fileRemove');
 let attachedFile   = null;
 
+// Mobile sidebar refs
+const menuToggle    = document.getElementById('menuToggle');
+const sidebar       = document.querySelector('.sidebar');
+const sidebarOverlay = document.getElementById('sidebarOverlay');
+const dropOverlay   = document.getElementById('dropOverlay');
+
 // ─── Utilities ────────────────────────────────────────────
 const getBase = () => apiBaseInput.value.replace(/\/+$/, '');
 
@@ -35,26 +42,67 @@ const esc = (v) => String(v ?? '')
   .replaceAll('&', '&amp;').replaceAll('<', '&lt;')
   .replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 
-/** Convert basic markdown to HTML: **bold**, *italic*, `code`, bullet lists */
+/** Render markdown to HTML — uses marked.js if available, falls back to basic */
 function renderMarkdown(text) {
+  if (typeof marked !== 'undefined') {
+    try {
+      marked.setOptions({ breaks: true, gfm: true });
+      return marked.parse(text);
+    } catch (e) { console.warn('marked.js error, using fallback:', e); }
+  }
+  // Fallback: basic markdown
   return text
-    // Bold **text**
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    // Italic *text*
     .replace(/\*(.+?)\*/g, '<em>$1</em>')
-    // Inline code `code`
     .replace(/`([^`]+)`/g, '<code>$1</code>')
-    // Bullet lines starting with * or -
     .replace(/^[*-] (.+)$/gm, '<li>$1</li>')
-    // Wrap consecutive <li> in <ul>
     .replace(/(<li>.*<\/li>\n?)+/g, m => `<ul>${m}</ul>`)
-    // Double newline → paragraph break
     .split(/\n{2,}/).map(p => {
       p = p.trim();
       if (!p) return '';
       if (p.startsWith('<ul>') || p.startsWith('<li>')) return p;
       return `<p>${p.replace(/\n/g, '<br>')}</p>`;
     }).join('');
+}
+
+/** Generate follow-up suggestion chips based on answer context */
+function buildFollowupChips(answer, sources) {
+  const chips = [];
+  const hasRoute = sources?.some(s => s.type === 'train_route');
+  const hasTrain = sources?.some(s => s.type === 'train' || s.type === 'train_route');
+  const hasStation = sources?.some(s => s.type === 'station');
+  const hasRule = sources?.some(s => s.type === 'rule');
+  const trainNo = sources?.find(s => s.train_no)?.train_no;
+
+  if (hasTrain && trainNo) {
+    if (!hasRoute) chips.push(`Route of train ${trainNo}`);
+    chips.push(`Live status of ${trainNo}`);
+  }
+  if (hasStation) {
+    const stn = sources.find(s => s.type === 'station');
+    if (stn?.station_name) chips.push(`Trains via ${stn.station_name}`);
+  }
+  if (hasRoute) chips.push('Cancellation charges');
+  if (hasRule) chips.push('Luggage rules');
+  if (!chips.length) {
+    chips.push('Cancellation charges', 'Sleeper luggage limit');
+  }
+  return chips.slice(0, 3);
+}
+
+/** Copy button handler */
+function handleCopyClick(btn) {
+  const card = btn.closest('.answer-card');
+  const textEl = card?.querySelector('.answer-text');
+  if (!textEl) return;
+  navigator.clipboard.writeText(textEl.innerText).then(() => {
+    btn.innerHTML = '✅ Copied!';
+    btn.classList.add('copied');
+    setTimeout(() => {
+      btn.innerHTML = '📋 Copy';
+      btn.classList.remove('copied');
+    }, 2000);
+  });
 }
 
 /** Extract station codes from a route string like "VSKP > BZA > HYB" */
@@ -201,6 +249,74 @@ function buildChecklistSources(sources) {
   + `</div>`;
 }
 
+
+
+/** Right-side sources panel — chips grouped by type, shown inside the answer card */
+function buildSourcesPanel(result) {
+  const sources = result.sources || [];
+  const timeSec = typeof result.response_time_ms === 'number'
+                  ? (result.response_time_ms / 1000).toFixed(2) + 's' : null;
+
+  const TYPE_CONFIG = {
+    train:       { icon: '&#128641;', label: 'Trains',     cls: 'chip-train' },
+    train_route: { icon: '&#128506;', label: 'Routes',     cls: 'chip-route' },
+    rule:        { icon: '&#128218;', label: 'Rules',       cls: 'chip-rule'  },
+    station:     { icon: '&#127963;', label: 'Stations',   cls: 'chip-station'},
+    reference:   { icon: '&#128196;', label: 'References', cls: 'chip-ref'   },
+    live_status: { icon: '&#9889;',   label: 'Live API',   cls: 'chip-live'  },
+    pnr_status:  { icon: '&#127903;', label: 'PNR',        cls: 'chip-pnr'   },
+  };
+
+  // Group by type
+  const groups = {};
+  sources.forEach(s => {
+    const k = s.type || 'reference';
+    if (!groups[k]) groups[k] = { type: k, count: 0, items: [] };
+    groups[k].count++;
+    groups[k].items.push(s);
+  });
+
+  if (!Object.keys(groups).length) return '';
+
+  const numDocs = result.num_documents_retrieved ?? sources.length ?? 0;
+
+  const chipRows = Object.values(groups).map(g => {
+    const cfg = TYPE_CONFIG[g.type] || { icon: '&#128196;', label: g.type, cls: 'chip-ref' };
+    const uid  = 'sp-' + Math.random().toString(36).slice(2, 7);
+    const itemList = g.items.map(s => {
+      const sc = typeof s.relevance_score === 'number' ? s.relevance_score.toFixed(3) : '-';
+      return '<div class="sp-item"><span class="sp-check">&#10003;</span>'
+           + '<span class="sp-name">' + esc(sourceTitle(s)) + '</span>'
+           + '<span class="sp-score">' + esc(sc) + '</span></div>';
+    }).join('');
+    return '<div class="sp-group">'
+         + '<button class="sp-chip ' + cfg.cls + '" onclick="(function(b){'
+         +   'var d=document.getElementById(\'' + uid + '\');'
+         +   'var open=d.classList.toggle(\'sp-expanded\');'
+         +   'b.classList.toggle(\'sp-chip--active\',open);'
+         + '})(this)">'
+         +   '<span class="sp-icon">' + cfg.icon + '</span>'
+         +   '<span class="sp-label">' + cfg.label + '</span>'
+         +   '<span class="sp-count">' + g.count + '</span>'
+         + '</button>'
+         + '<div class="sp-items" id="' + uid + '">' + itemList + '</div>'
+         + '</div>';
+  }).join('');
+
+  const footer = timeSec
+    ? '<div class="sp-footer">&#8987; ' + timeSec + ' &nbsp;&middot;&nbsp; ' + numDocs + ' docs</div>'
+    : '<div class="sp-footer">' + numDocs + ' docs</div>';
+
+  return '<div class="sources-panel">'
+       + '<div class="sp-heading">Sources</div>'
+       + chipRows
+       + footer
+       + '</div>';
+}
+
+
+
+
 function buildStatsStrip(stats) {
   const timeSec = typeof stats.responseTime === 'number' ? (stats.responseTime / 1000).toFixed(2) + 's' : '—';
   const score = typeof stats.avgScore === 'number' ? stats.avgScore.toFixed(4) : '—';
@@ -321,22 +437,39 @@ function replaceWithAnswer(msgId, result) {
     pnrCardHtml = buildTicketCard(pnrDoc);
   }
 
+  const followupChips = buildFollowupChips(result.answer, result.sources);
+  const chipsHtml = followupChips.length
+    ? `<div class="followup-chips">${followupChips.map(c => `<button class="followup-chip" data-followup="${esc(c)}">${esc(c)}</button>`).join('')}</div>`
+    : '';
+
   el.querySelector('.answer-bubble').outerHTML = `
     <div class="answer-bubble">
       <div class="ai-avatar">🚂</div>
       <div class="answer-content">
-        <div class="answer-card">
-          <div class="answer-text">${renderMarkdown(result.answer.trim())}</div>
-          ${routeVizHtml}
-          ${pnrCardHtml}
-          <div class="sources-section">
-            <div class="sources-heading">Sources (${result.num_documents_retrieved ?? result.sources?.length ?? 0})</div>
-            ${buildSourceBadges(result.sources)}
+        <div class="answer-card answer-card--grid">
+          <button class="copy-btn" onclick="handleCopyClick(this)">📋 Copy</button>
+          <div class="answer-main">
+            <div class="answer-text">${renderMarkdown(result.answer.trim())}</div>
+            ${routeVizHtml}
+            ${pnrCardHtml}
+            ${chipsHtml}
           </div>
+          ${buildSourcesPanel(result)}
         </div>
       </div>
     </div>`;
+
+  // Wire follow-up chip clicks
+  el.querySelectorAll('.followup-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      questionInput.value = chip.dataset.followup;
+      updateCharCount();
+      askForm.dispatchEvent(new Event('submit'));
+    });
+  });
+
   chatArea.scrollTop = chatArea.scrollHeight;
+  saveChatHistory();
 }
 
 function replaceWithError(msgId, message) {
@@ -481,6 +614,7 @@ async function submitQuestion(question) {
         // Render the shell of the answer card immediately so we can stream into it
         answerContentEl.innerHTML = `
           <div class="answer-card">
+            <button class="copy-btn" onclick="handleCopyClick(this)">📋 Copy</button>
             ${warningHtml}
             <div class="answer-text"></div>
             <div class="sources-section" style="display:none">
@@ -495,6 +629,7 @@ async function submitQuestion(question) {
         if (!hasInitializedBubble) {
           answerContentEl.innerHTML = `
             <div class="answer-card">
+              <button class="copy-btn" onclick="handleCopyClick(this)">📋 Copy</button>
               <div class="answer-text"></div>
             </div>`;
           hasInitializedBubble = true;
@@ -534,18 +669,48 @@ async function submitQuestion(question) {
             }
           }
 
-          // Render checklist sources
+          // Remove placeholder sources shell
           const sourcesSection = cardEl.querySelector('.sources-section');
-          if (sourcesSection) {
-            sourcesSection.style.display = 'block';
-            const listContainer = sourcesSection.querySelector('.sources-list-container');
-            if (listContainer) listContainer.innerHTML = buildChecklistSources(sources);
+          if (sourcesSection) sourcesSection.remove();
+
+          // Add grid layout and inject sources panel
+          cardEl.classList.add('answer-card--grid');
+          const panelResult = {
+            sources: sources,
+            num_documents_retrieved: stats.numDocs,
+            avg_score: stats.avgScore,
+            response_time_ms: stats.responseTime,
+            llm_model: stats.llmModel,
+          };
+          const panelHtml = buildSourcesPanel(panelResult);
+          if (panelHtml) cardEl.insertAdjacentHTML('beforeend', panelHtml);
+
+          // Wrap answer-text in answer-main div if not already
+          const textEl2 = cardEl.querySelector('.answer-text');
+          if (textEl2 && !textEl2.closest('.answer-main')) {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'answer-main';
+            textEl2.parentNode.insertBefore(wrapper, textEl2);
+            wrapper.appendChild(textEl2);
           }
 
-          // Render RAG statistics strip
-          cardEl.insertAdjacentHTML('beforeend', buildStatsStrip(stats));
+          // Render follow-up chips inside answer-main
+          const followupChips = buildFollowupChips(answerText, sources);
+          if (followupChips.length) {
+            const mainDiv = cardEl.querySelector('.answer-main') || cardEl;
+            const chipsHtml = `<div class="followup-chips">${followupChips.map(c => `<button class="followup-chip" data-followup="${esc(c)}">${esc(c)}</button>`).join('')}</div>`;
+            mainDiv.insertAdjacentHTML('beforeend', chipsHtml);
+            mainDiv.querySelectorAll('.followup-chip').forEach(chip => {
+              chip.addEventListener('click', () => {
+                questionInput.value = chip.dataset.followup;
+                updateCharCount();
+                askForm.dispatchEvent(new Event('submit'));
+              });
+            });
+          }
         }
         chatArea.scrollTop = chatArea.scrollHeight;
+        saveChatHistory();
 
       } else if (payload.type === 'error') {
         throw new Error(payload.message || "An error occurred during streaming.");
@@ -643,6 +808,7 @@ clearBtn.addEventListener('click', () => {
   questionInput.value = '';
   updateCharCount();
   clearAttachedFile();
+  localStorage.removeItem(CHAT_KEY);
   questionInput.focus();
 });
 
@@ -735,16 +901,15 @@ async function submitWithFile(question, file) {
 
     // Render answer using existing helpers
     const answerHtml = renderMarkdown(data.answer || 'No response.');
-    const sourcesHtml = data.sources?.length
-      ? `<div class="sources-heading">SOURCES (${data.sources.length})</div>` + buildChecklistSources(data.sources)
-      : '';
-    const statsHtml = buildStatsStrip({
-      numDocs: data.num_documents_retrieved || 0,
-      avgScore: data.avg_relevance_score || 0,
-      responseTime: data.response_time_ms || 0,
-      llmModel: `${data.llm_model || '—'} (📷 Multi-Modal)`,
-      embedModel: data.embedding_model || '—',
-    });
+    const uploadFooterResult = {
+      sources: data.sources || [],
+      num_documents_retrieved: data.num_documents_retrieved || 0,
+      avg_score: data.avg_relevance_score || 0,
+      response_time_ms: data.response_time_ms || 0,
+      llm_model: (data.llm_model || '—') + ' (Multi-Modal)',
+    };
+    const sourcesHtml = buildSourcesFooter(uploadFooterResult);
+    const statsHtml = '';
 
     const el = document.getElementById(msgId);
     if (el) {
@@ -856,7 +1021,95 @@ function initVoiceInput() {
   });
 }
 
-// ─── Init ─────────────────────────────────────────────────
+// ─── Mobile Sidebar Toggle ──────────────────────────────────────
+function toggleSidebar() {
+  sidebar.classList.toggle('open');
+  sidebarOverlay.classList.toggle('active');
+}
+if (menuToggle) {
+  menuToggle.addEventListener('click', toggleSidebar);
+}
+if (sidebarOverlay) {
+  sidebarOverlay.addEventListener('click', toggleSidebar);
+}
+
+// ─── Drag & Drop File Upload ───────────────────────────────────
+const mainPanel = document.querySelector('.main-panel');
+let dragCounter = 0;
+
+if (mainPanel && dropOverlay) {
+  mainPanel.addEventListener('dragenter', (e) => {
+    e.preventDefault();
+    dragCounter++;
+    dropOverlay.classList.add('active');
+  });
+  mainPanel.addEventListener('dragleave', (e) => {
+    e.preventDefault();
+    dragCounter--;
+    if (dragCounter <= 0) {
+      dragCounter = 0;
+      dropOverlay.classList.remove('active');
+    }
+  });
+  mainPanel.addEventListener('dragover', (e) => {
+    e.preventDefault();
+  });
+  mainPanel.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dragCounter = 0;
+    dropOverlay.classList.remove('active');
+
+    const file = e.dataTransfer?.files?.[0];
+    if (!file) return;
+
+    const allowed = ['image/png','image/jpeg','image/jpg','image/webp','application/pdf'];
+    if (!allowed.includes(file.type)) {
+      alert('Unsupported file type. Please drop an image (PNG/JPG/WEBP) or PDF.');
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      alert('File too large. Maximum size is 10 MB.');
+      return;
+    }
+
+    showFilePreview(file);
+    questionInput.focus();
+  });
+}
+
+// ─── Chat History Persistence ──────────────────────────────────
+function saveChatHistory() {
+  try {
+    const html = chatArea.innerHTML;
+    // Only save if there are actual messages (not just empty state)
+    if (html.includes('chat-message')) {
+      localStorage.setItem(CHAT_KEY, html);
+    }
+  } catch (e) {
+    console.warn('Could not save chat history:', e);
+  }
+}
+
+function restoreChatHistory() {
+  try {
+    const saved = localStorage.getItem(CHAT_KEY);
+    if (saved && saved.includes('chat-message')) {
+      chatArea.innerHTML = saved;
+      // Re-wire follow-up chip clicks on restored messages
+      chatArea.querySelectorAll('.followup-chip').forEach(chip => {
+        chip.addEventListener('click', () => {
+          questionInput.value = chip.dataset.followup;
+          updateCharCount();
+          askForm.dispatchEvent(new Event('submit'));
+        });
+      });
+    }
+  } catch (e) {
+    console.warn('Could not restore chat history:', e);
+  }
+}
+
+// ─── Init ─────────────────────────────────────────────────────
 const savedBase  = localStorage.getItem(STORAGE_KEY);
 const savedTheme = localStorage.getItem(THEME_KEY);
 
@@ -866,3 +1119,4 @@ if (savedTheme) document.documentElement.dataset.theme = savedTheme;
 updateCharCount();
 checkHealth();
 initVoiceInput();
+restoreChatHistory();

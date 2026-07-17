@@ -27,3 +27,7 @@ Thumbs.db
 # md files
 COMMANDS.md
 project_summary.md
+
+# Screenshots / images accidentally in root
+Screenshot*.png
+*.png

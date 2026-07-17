@@ -18,6 +18,9 @@ import chromadb  # type: ignore[import-untyped]
 from langchain_core.documents import Document  # type: ignore[import-untyped]
 
 # Force UTF-8 for Windows console (prevents emoji UnicodeEncodeError)
+from app.logger import get_logger
+logger = get_logger("app.retriever")
+
 try:
     sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
     sys.stderr.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
@@ -58,7 +61,7 @@ def get_embeddings():
 
     if not use_local and api_key and api_key not in ("your-gemini-api-key-here", ""):
         from langchain_google_genai import GoogleGenerativeAIEmbeddings  # type: ignore[import-untyped]
-        print("[CLOUD] Using Gemini embeddings (models/gemini-embedding-001)")
+        logger.info("[CLOUD] Using Gemini embeddings (models/gemini-embedding-001)")
         return GoogleGenerativeAIEmbeddings(
             model="models/gemini-embedding-001",
             google_api_key=api_key,
@@ -70,7 +73,7 @@ def get_embeddings():
     except ImportError:
         from langchain_community.embeddings import HuggingFaceEmbeddings  # type: ignore[import-untyped]
 
-    print("[LOCAL] Using sentence-transformers/all-MiniLM-L6-v2 (offline, no rate limits)")
+    logger.info("[LOCAL] Using sentence-transformers/all-MiniLM-L6-v2 (offline, no rate limits)")
     return HuggingFaceEmbeddings(
         model_name="sentence-transformers/all-MiniLM-L6-v2",
         model_kwargs={"device": "cpu", "local_files_only": False},
@@ -80,6 +83,59 @@ def get_embeddings():
 def get_chroma_client() -> chromadb.ClientAPI:
     """Get persistent ChromaDB client."""
     return chromadb.PersistentClient(path=CHROMA_DB_DIR)
+
+
+# ─────────────────────────────────────────────
+# RAILWAY SYNONYM MAP
+# ─────────────────────────────────────────────
+
+# Maps short/colloquial railway terms → official terminology used in ChromaDB documents.
+# Improves recall for jargon-heavy queries without retraining the embedding model.
+_RAILWAY_SYNONYMS: dict[str, str] = {
+    r"\bsl\b":      "Sleeper class SL",
+    r"\b2a\b":      "AC 2 Tier 2A",
+    r"\b3a\b":      "AC 3 Tier 3A",
+    r"\bcc\b":      "AC Chair Car CC",
+    r"\b1a\b":      "AC First Class 1A",
+    r"\bec\b":      "Executive Chair Car EC",
+    r"\b2s\b":      "Second Sitting 2S",
+    r"\brac\b":     "RAC Reservation Against Cancellation",
+    r"\bwl\b":      "Waiting List WL",
+    r"\btte\b":     "Travelling Ticket Examiner TTE",
+    r"\btatkal\b":  "Tatkal quota premium booking",
+    r"\bpnr\b":     "PNR Passenger Name Record",
+    r"\bntes\b":    "National Train Enquiry System NTES",
+    r"\birctc\b":   "IRCTC Indian Railway Catering Tourism Corporation",
+    r"\bsf\b":      "Superfast SF",
+    r"\bexp\b":     "Express",
+    r"\bpax\b":     "passenger",
+    r"\bluggage\b": "luggage baggage allowance",
+    r"\bbaggage\b": "luggage baggage allowance",
+    r"\bfine\b":    "penalty fine charge",
+    r"\bvizag\b":   "Visakhapatnam VSKP Vizag",
+    r"\bhyd\b":     "Hyderabad HYD HYB SC Secunderabad",
+    r"\bhyderabad\b": "Hyderabad HYD HYB SC Secunderabad Nampally",
+    r"\bsecunderabad\b": "Secunderabad SC Hyderabad HYB",
+    r"\bbzp\b":     "Vijayawada BZA",
+    r"\bmas\b":     "Chennai Central MAS",
+    r"\bndls?\b":   "New Delhi NDLS",
+    r"\bcst\b":     "Chhatrapati Shivaji Terminus Mumbai CSTM",
+    r"\bsbc\b":     "Bengaluru KSR SBC",
+    r"\bbpl\b":     "Bhopal BPL",
+}
+
+
+def _expand_railway_synonyms(query: str) -> str:
+    """
+    Expand railway jargon and abbreviations in a query string.
+
+    E.g. "SL class RAC quota" → "Sleeper class SL RAC Reservation Against Cancellation quota"
+    """
+    import re as _re
+    result = query
+    for pattern, expansion in _RAILWAY_SYNONYMS.items():
+        result = _re.sub(pattern, expansion, result, flags=_re.IGNORECASE)
+    return result
 
 
 # ─────────────────────────────────────────────
@@ -119,12 +175,12 @@ class UnifiedRetriever:
                     client=self.client,
                 )
             except Exception as exc:
-                print(f"[WARN] Could not load collection '{name}': {exc}")
+                logger.warning(f"[WARN] Could not load collection '{name}': {exc}")
 
         if self.vector_stores:
-            print(f"[OK] Retriever ready — collections: {list(self.vector_stores.keys())}")
+            logger.info(f"[OK] Retriever ready — collections: {list(self.vector_stores.keys())}")
         else:
-            print("[WARN] No ChromaDB collections found! Run: python scripts/create_embeddings.py")
+            logger.warning("[WARN] No ChromaDB collections found! Run: python scripts/create_embeddings.py")
 
     def _init_station_resolver(self) -> None:
         """Initialize station alias search maps using build_station_lookup."""
@@ -174,9 +230,9 @@ class UnifiedRetriever:
             # Pre-sort station names by length descending ONCE (avoids re-sorting on every query)
             self._sorted_station_names = sorted(self.station_names_to_code.keys(), key=len, reverse=True)
 
-            print(f"[Resolver] Loaded {len(self.station_names_to_code)} names/AKAs for fuzzy resolution")
+            logger.info(f"[Resolver] Loaded {len(self.station_names_to_code)} names/AKAs for fuzzy resolution")
         except Exception as e:
-            print(f"[WARN] Failed to load station lookup for resolver: {e}")
+            logger.warning(f"[WARN] Failed to load station lookup for resolver: {e}")
             self.station_names_to_code = {}
             self.all_station_names = []
             self._sorted_station_names = []
@@ -326,9 +382,9 @@ class UnifiedRetriever:
                         train_name = result["metadatas"][0].get("train_name", "")
                         if num not in matched_numbers:
                             matched_numbers.append(num)
-                        print(f"[EXACT] {label}: train {num} — {train_name} ({len(result['documents'])} docs)")
+                        logger.debug(f"[EXACT] {label}: train {num} — {train_name} ({len(result['documents'])} docs)")
                 except Exception as exc:
-                    print(f"[WARN] Lookup failed in '{col_name}' for train {num}: {exc}")
+                    logger.warning(f"[WARN] Lookup failed in '{col_name}' for train {num}: {exc}")
 
         return exact_docs, matched_numbers
 
@@ -347,6 +403,9 @@ class UnifiedRetriever:
         exact_docs, matched_train_numbers = self._lookup_by_train_number(query)
         train_number_detected = len(matched_train_numbers) > 0
 
+        # --- Step 1b: Railway synonym expansion ---
+        query = _expand_railway_synonyms(query)
+
         # --- Step 2: Resolve ALL station names in the query ---
         all_stations = self._resolve_all_stations(query)
         # Keep backward-compatible single station_info for route trimming logic
@@ -363,7 +422,7 @@ class UnifiedRetriever:
                     extras.append(canon)
             if extras:
                 search_query = f"{query} {' '.join(extras)}"
-                print(f"[REWRITE] Multi-station resolved: '{query}' -> '{search_query}")
+                logger.debug(f"[REWRITE] Multi-station resolved: '{query}' -> '{search_query}")
 
         # --- Step 3: Intent-Based Collection Filtering (Metadata Routing) ---
         query_lower = query.lower()
@@ -374,10 +433,10 @@ class UnifiedRetriever:
         
         if any(kw in query_lower for kw in transit_keywords):
             active_collections = [c for c in active_collections if c in ("train_routes", "stations", "trains")]
-            print(f"[INTENT] Routing to transit collections: {active_collections}")
+            logger.debug(f"[INTENT] Routing to transit collections: {active_collections}")
         elif any(kw in query_lower for kw in rules_keywords):
             active_collections = [c for c in active_collections if c in ("railway_rules", "references")]
-            print(f"[INTENT] Routing to rules/references collections: {active_collections}")
+            logger.debug(f"[INTENT] Routing to rules/references collections: {active_collections}")
 
         # --- Step 4: Hybrid Keyword Contains Matching for ALL resolved stations ---
         keyword_docs: list[Document] = []
@@ -394,7 +453,7 @@ class UnifiedRetriever:
                                 col = self.client.get_collection(name)
                                 res = col.get(where_document={"$contains": term})
                                 if res["documents"]:
-                                    print(f"[KEYWORD] Found {len(res['documents'])} matches in '{name}' containing '{term}'")
+                                    logger.debug(f"[KEYWORD] Found {len(res['documents'])} matches in '{name}' containing '{term}'")
                                     for i in range(len(res["documents"])):
                                         doc = Document(
                                             page_content=res["documents"][i],
@@ -402,7 +461,7 @@ class UnifiedRetriever:
                                         )
                                         keyword_docs.append(doc)
                             except Exception as exc:
-                                print(f"[WARN] Keyword contains query failed for '{name}' (term='{term}'): {exc}")
+                                logger.warning(f"[WARN] Keyword contains query failed for '{name}' (term='{term}'): {exc}")
 
         # --- Step 5: Semantic search across active collections ---
         all_results: list[tuple[Document, float]] = []
@@ -422,7 +481,7 @@ class UnifiedRetriever:
                     doc.metadata["relevance_score"] = round(score, 4)
                     all_results.append((doc, score))
             except Exception as exc:
-                print(f"[WARN] Error searching '{name}': {exc}")
+                logger.warning(f"[WARN] Error searching '{name}': {exc}")
 
         all_results.sort(key=lambda x: x[1], reverse=True)
         semantic_docs = [doc for doc, _ in all_results[: self.top_k]]
@@ -437,11 +496,37 @@ class UnifiedRetriever:
                 seen_content.add(snippet)
                 deduped_docs.append(doc)
 
+        # --- Step 6b: Two-Station Intersection Boost ---
+        # When query has 2+ stations, boost docs containing ALL station terms to top.
+        # This fixes BZA→SC queries where docs only matching one station dominate.
+        if len(all_stations) >= 2:
+            station_terms = []
+            for canon, code in all_stations:
+                station_terms.append((canon.lower(), code.lower()))
+
+            def _doc_matches_all_stations(doc: Document) -> bool:
+                content_lower = doc.page_content.lower()
+                for canon, code in station_terms:
+                    if canon not in content_lower and code not in content_lower:
+                        return False
+                return True
+
+            both_match = [d for d in deduped_docs if _doc_matches_all_stations(d)]
+            one_match  = [d for d in deduped_docs if not _doc_matches_all_stations(d)]
+            if both_match:
+                logger.debug(f"[INTERSECT] {len(both_match)} docs match ALL stations, {len(one_match)} match only one")
+            deduped_docs = both_match + one_match
+
         # --- Step 7: Trim Route Schedules to avoid LLM context length overflow ---
         # Only trim when query is about a station (not a specific train number).
         # For train number queries, the user wants the full schedule.
-        if station_info and not train_number_detected:
-            canonical_name, station_code = station_info
+        if all_stations and not train_number_detected:
+            # Collect all station codes + canonical names across ALL resolved stations
+            all_station_terms = set()
+            for canon, code in all_stations:
+                all_station_terms.add(canon.lower())
+                all_station_terms.add(code.lower())
+
             for doc in deduped_docs:
                 if doc.metadata.get("source_type") == "train_route":
                     content = doc.page_content
@@ -454,8 +539,8 @@ class UnifiedRetriever:
                         trimmed_stops = []
 
                         for idx, stop in enumerate(stops_list):
-                            is_target = (station_code.lower() in stop.lower() or 
-                                         canonical_name.lower() in stop.lower())
+                            stop_lower = stop.lower()
+                            is_target = any(term in stop_lower for term in all_station_terms)
                             is_first = (idx == 0)
                             is_last = (idx == len(stops_list) - 1)
 

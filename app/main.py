@@ -27,6 +27,9 @@ from pydantic import BaseModel, Field
 from dotenv import load_dotenv  # type: ignore[import-untyped]
 import pandas as pd  # type: ignore[import-untyped]
 
+from app.logger import get_logger
+logger = get_logger("app.main")
+
 
 # Load environment variables before anything else
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
@@ -99,6 +102,10 @@ rag_chain = None
 _session_last_train: dict[str, str] = {}
 _SESSION_MAX_SIZE = 1000  # max unique sessions to keep in memory
 
+# Conversation memory — stores last N Q&A pairs per session for multi-turn chat
+_session_history: dict[str, list[dict]] = {}  # {session_key: [{"q": ..., "a": ...}, ...]}
+_HISTORY_MAX_TURNS = 5  # keep last 5 exchanges per session
+
 
 
 @asynccontextmanager
@@ -106,38 +113,38 @@ async def lifespan(app: FastAPI):
     """Initialize RAG chain once at startup, cleanup on shutdown."""
     global rag_chain
 
-    print("\n[STARTUP] Railway RAG Assistant -- Starting up...")
-    print("=" * 50)
+    logger.info("Railway RAG Assistant -- Starting up...")
+    logger.info("=" * 50)
 
     provider = os.getenv("LLM_PROVIDER", "gemini").lower()
-    print(f"   LLM Provider : {provider.upper()}")
+    logger.info(f"LLM Provider: {provider.upper()}")
 
     if provider == "gemini":
         api_key = os.getenv("GOOGLE_API_KEY", "")
         if not api_key or api_key == "your-gemini-api-key-here":
-            print("[ERROR] GOOGLE_API_KEY not set! Please update your .env file.")
-            print("   Get a free key at: https://aistudio.google.com")
+            logger.error("GOOGLE_API_KEY not set! Please update your .env file.")
+            logger.error("Get a free key at: https://aistudio.google.com")
         else:
             from app.rag import get_rag_chain
             rag_chain = get_rag_chain()
-            print("\n[OK] RAG chain ready! (Gemini)")
+            logger.info("RAG chain ready! (Gemini)")
     else:
         # LM Studio -- no API key needed
         base_url = os.getenv("LOCAL_API_BASE", "http://localhost:1234/v1")
-        print(f"   LM Studio    : {base_url}")
-        print("   Make sure LM Studio is running with a model loaded!")
+        logger.info(f"LM Studio: {base_url}")
+        logger.warning("Make sure LM Studio is running with a model loaded!")
         from app.rag import get_rag_chain
         rag_chain = get_rag_chain()
-        print("\n[OK] RAG chain ready! (LM Studio)")
+        logger.info("RAG chain ready! (LM Studio)")
 
-    print("=" * 50)
-    print("[LIVE] API is live at http://localhost:8000")
-    print("[DOCS] Swagger UI at http://localhost:8000/docs\n")
+    logger.info("=" * 50)
+    logger.info("API is live at http://localhost:8000")
+    logger.info("Swagger UI at http://localhost:8000/docs")
 
     yield  # App runs here
 
     # Shutdown
-    print("\n[STOP] Shutting down Railway RAG Assistant...")
+    logger.info("Shutting down Railway RAG Assistant...")
     rag_chain = None
 
 
@@ -504,7 +511,19 @@ async def ask_question_smart(request: QuestionRequest, raw_request: Request):
             if static_context:
                 context_parts.append(f"=== DATABASE RULES/TIMETABLES (STATIC) ===\n{static_context}")
 
-            merged_context = "\n\n".join(context_parts)
+            # Inject conversation history for multi-turn context
+            history = _session_history.get(session_key, [])
+            history_context = ""
+            if history:
+                history_lines = []
+                for h in history[-_HISTORY_MAX_TURNS:]:
+                    history_lines.append(f"User: {h['q']}")
+                    # Truncate long answers to keep context manageable
+                    ans_preview = h['a'][:300] + '...' if len(h['a']) > 300 else h['a']
+                    history_lines.append(f"Assistant: {ans_preview}")
+                history_context = "\n=== CONVERSATION HISTORY (for context) ===\n" + "\n".join(history_lines) + "\n"
+
+            merged_context = "\n\n".join(filter(None, [history_context, live_context, f"=== DATABASE RULES/TIMETABLES (STATIC) ===\n{static_context}" if static_context else None]))
 
             prompt = ChatPromptTemplate.from_messages([
                 ("system", SYSTEM_PROMPT),
@@ -518,6 +537,17 @@ async def ask_question_smart(request: QuestionRequest, raw_request: Request):
                 full_answer += token
                 yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
 
+            # Save this Q&A pair to conversation history
+            if session_key not in _session_history:
+                _session_history[session_key] = []
+            _session_history[session_key].append({"q": question, "a": full_answer})
+            # Trim to max turns
+            if len(_session_history[session_key]) > _HISTORY_MAX_TURNS:
+                _session_history[session_key] = _session_history[session_key][-_HISTORY_MAX_TURNS:]
+            # Guard against unbounded session growth
+            if len(_session_history) > _SESSION_MAX_SIZE:
+                for k in list(_session_history.keys())[:200]:
+                    del _session_history[k]
             # Send done event
             elapsed_ms = round((time.time() - t0) * 1000, 1)
             yield f"data: {json.dumps({'type': 'done', 'response_time_ms': elapsed_ms})}\n\n"
@@ -551,7 +581,8 @@ async def ask_with_file(
     **Max file size:** 10 MB
     """
     import time
-    import google.generativeai as genai
+    from google import genai
+    from google.genai import types
 
     # Validate
     api_key = os.getenv("GOOGLE_API_KEY", "")
@@ -578,10 +609,9 @@ async def ask_with_file(
         t0 = time.time()
         import re, io, PIL.Image
 
-        # Configure Gemini
-        genai.configure(api_key=api_key)
+        # Configure Gemini (new SDK — google.genai)
+        client = genai.Client(api_key=api_key)
         model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-        model = genai.GenerativeModel(model_name)
 
         effective_question = question.strip()
 
@@ -601,20 +631,24 @@ async def ask_with_file(
         )
 
         # Build the classification request (image or PDF)
+        gen_config = types.GenerateContentConfig(temperature=0.1, max_output_tokens=256)
         if content_type == "application/pdf":
-            cls_resp = model.generate_content(
-                [classification_prompt, {"mime_type": "application/pdf", "data": file_bytes}],
-                generation_config={"temperature": 0.1, "max_output_tokens": 256},
+            pdf_part = types.Part.from_bytes(data=file_bytes, mime_type="application/pdf")
+            cls_resp = client.models.generate_content(
+                model=model_name,
+                contents=[classification_prompt, pdf_part],
+                config=gen_config,
             )
         else:
             pil_img = PIL.Image.open(io.BytesIO(file_bytes))
-            cls_resp = model.generate_content(
-                [classification_prompt, pil_img],
-                generation_config={"temperature": 0.1, "max_output_tokens": 256},
+            cls_resp = client.models.generate_content(
+                model=model_name,
+                contents=[classification_prompt, pil_img],
+                config=gen_config,
             )
 
         cls_text = cls_resp.text.strip() if cls_resp.text else ""
-        print(f"[UPLOAD] Classification response:\n{cls_text}")
+        logger.debug(f"Classification response:\n{cls_text}")
 
         # Parse structured response
         def _parse_field(label: str, text: str) -> str:
@@ -629,7 +663,7 @@ async def ask_with_file(
 
         # ── Step 2: Non-railway content → skip ChromaDB, return closed-domain message ──
         if not is_railway:
-            print(f"[UPLOAD] Non-railway content detected — skipping ChromaDB retrieval")
+            logger.info("Non-railway content detected — skipping ChromaDB retrieval")
             answer_text = (
                 f"📋 **I can see:** {description}\n\n"
                 "⚠️ **This is a closed-domain assistant for Indian Railways only.**\n"
@@ -681,16 +715,20 @@ async def ask_with_file(
 
         final_question = effective_question or extracted_q or "Please analyse this railway document."
 
+        gen_config_full = types.GenerateContentConfig(temperature=0.3, max_output_tokens=2048)
         if content_type == "application/pdf":
-            response = model.generate_content(
-                [system_instruction, {"mime_type": "application/pdf", "data": file_bytes}, final_question],
-                generation_config={"temperature": 0.3, "max_output_tokens": 2048},
+            pdf_part = types.Part.from_bytes(data=file_bytes, mime_type="application/pdf")
+            response = client.models.generate_content(
+                model=model_name,
+                contents=[system_instruction, pdf_part, final_question],
+                config=gen_config_full,
             )
         else:
             image = PIL.Image.open(io.BytesIO(file_bytes))
-            response = model.generate_content(
-                [system_instruction, image, final_question],
-                generation_config={"temperature": 0.3, "max_output_tokens": 2048},
+            response = client.models.generate_content(
+                model=model_name,
+                contents=[system_instruction, image, final_question],
+                config=gen_config_full,
             )
 
         elapsed_ms = round((time.time() - t0) * 1000, 1)

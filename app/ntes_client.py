@@ -17,6 +17,9 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 # ── In-memory cache (per server session, 5-min TTL) ──────────────
+from app.logger import get_logger
+logger = get_logger("app.ntes_client")
+
 _live_cache: dict[str, dict] = {}
 CACHE_TTL_SECONDS = 300  # 5 minutes
 
@@ -99,12 +102,12 @@ def get_train_running_status(train_no: str) -> dict:
         from_cache    : bool
     """
     train_no = str(train_no).strip()
-    print(f"[NTES] Request for train {train_no}")
+    logger.info(f"[NTES] Request for train {train_no}")
 
     # 1. Cache hit
     cached = _get_from_cache(train_no)
     if cached:
-        print(f"[NTES] Cache hit — age {cached.get('cache_age_seconds', '?')}s")
+        logger.info(f"[NTES] Cache hit — age {cached.get('cache_age_seconds', '?')}s")
         return cached
 
     # 2. Try NTES primary endpoints
@@ -121,7 +124,7 @@ def get_train_running_status(train_no: str) -> dict:
         return result
 
     # 4. All sources failed
-    print(f"[NTES] All sources failed for train {train_no}")
+    logger.info(f"[NTES] All sources failed for train {train_no}")
     return {
         "success": False,
         "train_no": train_no,
@@ -168,7 +171,7 @@ def get_station_live_board(station_code: str, board_type: str = "ARR") -> dict:
             }
             return result
     except Exception as e:
-        print(f"[NTES] Station board failed for {station_code}: {e}")
+        logger.info(f"[NTES] Station board failed for {station_code}: {e}")
 
     return {
         "success": False,
@@ -222,7 +225,7 @@ def _fetch_ntes(train_no: str, endpoint: str) -> Optional[dict]:
         params.update(csrf_data)
 
         resp = session.post(tr_url, data=params, timeout=REQUEST_TIMEOUT)
-        print(f"[NTES] tr POST status: {resp.status_code} | length: {len(resp.text)}")
+        logger.info(f"[NTES] tr POST status: {resp.status_code} | length: {len(resp.text)}")
         
         if resp.status_code == 200 and len(resp.text) > 100:
             result = _parse_ntes_text(train_no, resp.text)
@@ -231,7 +234,7 @@ def _fetch_ntes(train_no: str, endpoint: str) -> Optional[dict]:
             if result and (not result.get("current_station") or result.get("current_station") == "Station Info Loaded"):
                 yesterday = datetime.now() - timedelta(days=1)
                 y_date = yesterday.strftime("%d-%b-%Y")
-                print(f"[NTES] Train not started for today's date ({j_date}). Trying yesterday's date ({y_date})...")
+                logger.info(f"[NTES] Train not started for today's date ({j_date}). Trying yesterday's date ({y_date})...")
                 
                 # Fetch a fresh CSRF token for the fallback request
                 r_csrf_y = session.get(csrf_url, timeout=REQUEST_TIMEOUT)
@@ -254,15 +257,15 @@ def _fetch_ntes(train_no: str, endpoint: str) -> Optional[dict]:
                 params_y.update(csrf_data_y)
                 
                 resp_y = session.post(tr_url, data=params_y, timeout=REQUEST_TIMEOUT)
-                print(f"[NTES] Yesterday fallback tr POST status: {resp_y.status_code} | length: {len(resp_y.text)}")
+                logger.info(f"[NTES] Yesterday fallback tr POST status: {resp_y.status_code} | length: {len(resp_y.text)}")
                 if resp_y.status_code == 200 and len(resp_y.text) > 100:
                     result_y = _parse_ntes_text(train_no, resp_y.text)
-                    print(f"[NTES] Yesterday fallback parsed: {result_y}")
+                    logger.info(f"[NTES] Yesterday fallback parsed: {result_y}")
                     if result_y and result_y.get("current_station") and result_y.get("current_station") != "Station Info Loaded":
                         return result_y
             return result
     except Exception as e:
-        print(f"[NTES] Error fetching live status: {e}")
+        logger.info(f"[NTES] Error fetching live status: {e}")
     return None
 
 
@@ -280,11 +283,11 @@ def _fetch_erail(train_no: str) -> Optional[dict]:
             headers={**HEADERS, "Referer": "https://erail.in/"},
             timeout=REQUEST_TIMEOUT,
         )
-        print(f"[NTES] erail.in → HTTP {resp.status_code}")
+        logger.info(f"[NTES] erail.in → HTTP {resp.status_code}")
         if resp.status_code == 200 and resp.text.strip():
             return _parse_erail_response(train_no, resp.text)
     except Exception as e:
-        print(f"[NTES] erail.in error: {e}")
+        logger.info(f"[NTES] erail.in error: {e}")
     return None
 
 
@@ -333,7 +336,7 @@ def _parse_ntes_json(train_no: str, data: dict) -> Optional[dict]:
             "from_cache": False,
         }
     except Exception as e:
-        print(f"[NTES] JSON parse error: {e}")
+        logger.info(f"[NTES] JSON parse error: {e}")
         return None
 
 
@@ -474,7 +477,7 @@ def _parse_ntes_text(train_no: str, text: str) -> Optional[dict]:
             "from_cache": False,
         }
     except Exception as e:
-        print(f"[NTES] HTML text parse error: {e}")
+        logger.info(f"[NTES] HTML text parse error: {e}")
         return None
 
 
@@ -499,7 +502,7 @@ def _parse_erail_response(train_no: str, text: str) -> Optional[dict]:
             "from_cache": False,
         }
     except Exception as e:
-        print(f"[NTES] erail parse error: {e}")
+        logger.info(f"[NTES] erail parse error: {e}")
         return None
 
 

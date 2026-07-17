@@ -295,6 +295,7 @@ input:focus {
   grid-template-rows: auto auto 1fr auto;
   height: 100vh;
   overflow: hidden;
+  position: relative;
 }
 
 /* Header */
@@ -308,21 +309,7 @@ input:focus {
   flex-shrink: 0;
 }
 
-.header-eyebrow {
-  font-size: 0.75rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
-  color: var(--rail);
-  margin-bottom: 4px;
-}
 
-.header-title {
-  font-size: clamp(1.6rem, 2.5vw, 2.2rem);
-  font-weight: 900;
-  line-height: 1.1;
-  color: var(--ink);
-}
 
 .clear-btn {
   display: flex;
@@ -345,13 +332,16 @@ input:focus {
 /* Chips */
 .chips-row {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 8px;
   padding: 14px 32px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   overflow-x: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
+.chips-row::-webkit-scrollbar { display: none; }
 
 .chip {
   padding: 6px 14px;
@@ -685,6 +675,36 @@ input:focus {
   color: var(--rail);
   font-size: 0.9rem;
   line-height: 1.5;
+}
+
+
+/* ─── DRAG & DROP OVERLAY ─────────────────────────────── */
+.drop-overlay {
+  /* Hidden by default — only shown when dragging a file */
+  display: none;
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  background: rgba(0,0,0,0.55);
+  backdrop-filter: blur(4px);
+  border-radius: 12px;
+  align-items: center;
+  justify-content: center;
+}
+.drop-overlay.active {
+  display: flex;
+}
+.drop-overlay-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  color: #fff;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+.drop-overlay-content svg {
+  opacity: 0.9;
 }
 
 /* ─── ASK FORM ────────────────────────────────────────── */
@@ -1240,3 +1260,278 @@ textarea::placeholder { color: var(--ink3); }
 .pnr-p-seat {
   font-family: monospace;
 }
+
+/* ── 2-column answer card grid ─────────────────────────── */
+.answer-card--grid {
+  display: grid;
+  grid-template-columns: 1fr 220px;
+  gap: 0 16px;
+  align-items: start;
+}
+.answer-card--grid .copy-btn {
+  grid-column: 1 / -1;
+}
+.answer-main {
+  min-width: 0;
+}
+
+/* ── Right-side sources panel ───────────────────────────── */
+.sources-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border-radius: 10px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  align-self: start;
+  min-width: 0;
+}
+.sp-heading {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink2);
+  margin-bottom: 2px;
+}
+.sp-group { display: flex; flex-direction: column; gap: 0; }
+.sp-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 5px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  cursor: pointer;
+  font-size: 0.76rem;
+  font-family: inherit;
+  color: var(--ink2);
+  text-align: left;
+  transition: background 0.15s, border-color 0.15s;
+}
+.sp-chip:hover, .sp-chip--active {
+  background: var(--bg3);
+  border-color: var(--border2);
+  color: var(--ink);
+}
+.sp-icon  { font-size: 0.85rem; }
+.sp-label { flex: 1; font-weight: 500; }
+.sp-count {
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+}
+.sp-chip.chip-train   .sp-icon { color: var(--src-train);   }
+.sp-chip.chip-route   .sp-icon { color: var(--src-route);   }
+.sp-chip.chip-rule    .sp-icon { color: var(--src-rule);    }
+.sp-chip.chip-station .sp-icon { color: var(--src-station); }
+.sp-chip.chip-ref     .sp-icon { color: var(--src-ref);     }
+.sp-chip.chip-live    .sp-icon { color: #22c55e; }
+.sp-chip.chip-pnr     .sp-icon { color: #f59e0b; }
+.sp-items {
+  display: none;
+  flex-direction: column;
+  gap: 1px;
+  margin-top: 2px;
+  padding: 4px 6px;
+  border-radius: 0 0 8px 8px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-top: none;
+}
+.sp-items.sp-expanded { display: flex; }
+.sp-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.74rem;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--border);
+}
+.sp-item:last-child { border-bottom: none; }
+.sp-check { color: var(--rail); font-size: 0.78rem; flex-shrink: 0; }
+.sp-name  { flex: 1; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sp-score { flex-shrink: 0; color: var(--ink3); font-size: 0.7rem; font-variant-numeric: tabular-nums; }
+.sp-footer {
+  font-size: 0.68rem;
+  color: var(--ink3);
+  margin-top: 2px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  text-align: right;
+}
+@media (max-width: 640px) {
+  .answer-card--grid { grid-template-columns: 1fr; }
+  .sources-panel { margin-top: 10px; }
+}
+
+/* Header title + subtitle inline */
+.header-title-group {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.header-title {
+  font-size: clamp(1.1rem, 1.8vw, 1.5rem);
+  font-weight: 900;
+  line-height: 1.1;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.header-subtitle {
+  font-size: 0.78rem;
+  color: var(--ink3);
+  font-weight: 400;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Modern all-in-one input box ─────────────────────────── */
+.ask-form {
+  padding: 12px 24px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--bg2);
+  flex-shrink: 0;
+}
+
+.input-box {
+  display: flex;
+  flex-direction: column;
+  border-radius: 16px;
+  border: 1.5px solid var(--border2);
+  background: var(--bg3);
+  transition: border-color 0.18s, box-shadow 0.18s;
+  overflow: hidden;
+}
+
+.input-box:focus-within {
+  border-color: var(--rail);
+  box-shadow: 0 0 0 3px var(--rail-dim);
+  background: var(--bg2);
+}
+
+/* Textarea inside the box — no separate border */
+.input-box textarea {
+  width: 100%;
+  padding: 10px 14px 4px;
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  resize: none;
+  outline: none;
+  line-height: 1.5;
+  font-size: 0.93rem;
+  font-family: inherit;
+  min-height: 40px;
+  max-height: 120px;
+}
+
+.input-box textarea::placeholder { color: var(--ink3); }
+.input-box textarea:focus { box-shadow: none; }
+
+/* Toolbar row at the bottom of the box */
+.input-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px 6px;
+  gap: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.input-toolbar-left,
+.input-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Small icon-only tool buttons */
+.tool-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 9px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink2);
+  font-size: 0.78rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.tool-btn:hover {
+  background: var(--bg2);
+  border-color: var(--border);
+  color: var(--ink);
+}
+
+/* Char count inside box */
+.input-box .char-count {
+  font-size: 0.72rem;
+  color: var(--ink3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Shortcut pill inside box */
+.input-box .shortcut-hint {
+  padding: 2px 6px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  font-size: 0.68rem;
+  color: var(--ink3);
+  font-family: inherit;
+}
+
+/* Ask button stays red pill */
+.input-box .ask-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 16px;
+  border-radius: 10px;
+  background: var(--rail);
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.85rem;
+  font-family: inherit;
+  border: none;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+}
+.input-box .ask-btn:hover {
+  background: #c0392b;
+  transform: translateY(-1px);
+}
+.input-box .ask-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* File preview inside the box */
+.input-box .file-preview {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 14px;
+  background: rgba(255,255,255,0.04);
+  border-bottom: 1px solid var(--border);
+  font-size: 0.8rem;
+  gap: 10px;
+}
+
+/* Remove old standalone styles that conflict */

@@ -9,6 +9,9 @@ import requests
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 
+from app.logger import get_logger
+logger = get_logger("app.pnr_client")
+
 try:
     from bs4 import BeautifulSoup  # type: ignore[import-untyped]
 except ImportError:
@@ -94,7 +97,7 @@ def _fetch_confirmtkt(pnr: str) -> Optional[dict]:
     url = f"https://api.confirmtkt.com/api/pnr/pnrstatus?pnrNo={pnr}"
     try:
         resp = requests.get(url, headers=HEADERS, timeout=10)
-        print(f"[PNR] ConfirmTkt URL: {url} -> HTTP {resp.status_code}")
+        logger.info(f"[PNR] ConfirmTkt URL: {url} -> HTTP {resp.status_code}")
         if resp.status_code == 200:
             data = resp.json()
             # If Pnr is returned, it is a valid response (even if message is returned, let's verify keys)
@@ -126,7 +129,7 @@ def _fetch_confirmtkt(pnr: str) -> Optional[dict]:
                     "from_cache": False
                 }
     except Exception as e:
-        print(f"[PNR] ConfirmTkt error: {e}")
+        logger.info(f"[PNR] ConfirmTkt error: {e}")
     return None
 
 
@@ -135,10 +138,10 @@ def _fetch_railyatri_scraper(pnr: str) -> Optional[dict]:
     url = f"https://www.railyatri.in/pnr-status/{pnr}"
     try:
         resp = requests.get(url, headers=HEADERS, timeout=10)
-        print(f"[PNR] RailYatri URL: {url} -> HTTP {resp.status_code}")
+        logger.info(f"[PNR] RailYatri URL: {url} -> HTTP {resp.status_code}")
         if resp.status_code == 200 and resp.text:
             if BeautifulSoup is None:
-                print("[PNR] BeautifulSoup not available — skipping RailYatri scrape")
+                logger.info("[PNR] BeautifulSoup not available — skipping RailYatri scrape")
                 return None
             soup = BeautifulSoup(resp.text, "html.parser")
             
@@ -287,7 +290,7 @@ def _fetch_railyatri_scraper(pnr: str) -> Optional[dict]:
                     "from_cache": False
                 }
     except Exception as e:
-        print(f"[PNR] RailYatri scrape error: {e}")
+        logger.info(f"[PNR] RailYatri scrape error: {e}")
     return None
 
 

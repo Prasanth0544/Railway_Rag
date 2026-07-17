@@ -21,9 +21,10 @@ chromadb
 pandas
 python-dotenv
 python-multipart                # For FastAPI file uploads (image/PDF)
+pydantic-settings               # Config validation (app/config.py)
 
 # ── Multi-Modal (Gemini Vision) ───────────────────────
-google-generativeai             # Native Gemini SDK for image/PDF/audio processing
+google-genai                    # New unified Gemini SDK (replaces deprecated google-generativeai)
 Pillow                          # Image processing for multi-modal uploads (PNG/JPG/WEBP)
 
 # ── Optional: Offline/Local Embeddings (LM Studio mode)
