@@ -104,31 +104,70 @@ _HISTORY_MAX_TURNS = 5  # keep last 5 exchanges per session
 
 
 
+import threading
+import asyncio
+
+_rag_lock = threading.Lock()
+_rag_loading = False
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Lightweight startup — bind port first, init RAG on first request."""
+    """Start a background thread to warm up RAG chain — port opens immediately."""
     logger.info("Railway RAG Assistant -- Starting up (lazy mode)...")
-    logger.info("Port will open immediately. RAG chain loads on first request.")
+    logger.info("Port will open immediately. RAG chain warms up in background.")
     logger.info("API is live — Swagger UI at /docs")
+    # Kick off background warm-up so first query isn't slow
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, _warmup_rag_chain)
     yield  # App runs here
     logger.info("Shutting down Railway RAG Assistant...")
     global rag_chain
     rag_chain = None
 
 
+def _warmup_rag_chain():
+    """Background thread: pre-load RAG chain so first query is instant."""
+    global rag_chain, _rag_loading
+    with _rag_lock:
+        if rag_chain is not None or _rag_loading:
+            return
+        _rag_loading = True
+    try:
+        logger.info("[warmup] Pre-loading RAG chain in background thread...")
+        provider = os.getenv("LLM_PROVIDER", "gemini").lower()
+        api_key = os.getenv("GOOGLE_API_KEY", "")
+        if provider == "gemini" and (not api_key or api_key == "your-gemini-api-key-here"):
+            logger.error("[warmup] GOOGLE_API_KEY not set — RAG chain not loaded.")
+            return
+        from app.rag import get_rag_chain
+        with _rag_lock:
+            rag_chain = get_rag_chain()
+        logger.info(f"[warmup] RAG chain ready! Provider: {provider.upper()}")
+    except Exception as e:
+        logger.error(f"[warmup] Failed to load RAG chain: {e}")
+    finally:
+        _rag_loading = False
+
+
 def _ensure_rag_chain():
-    """Lazy-initialize the RAG chain on first use."""
+    """Ensure RAG chain is loaded — waits if background warmup is still running."""
     global rag_chain
     if rag_chain is not None:
         return
-    logger.info("[lazy-init] Loading RAG chain for first time...")
-    provider = os.getenv("LLM_PROVIDER", "gemini").lower()
-    api_key = os.getenv("GOOGLE_API_KEY", "")
-    if provider == "gemini" and (not api_key or api_key == "your-gemini-api-key-here"):
-        raise RuntimeError("GOOGLE_API_KEY is not set. Add it in your .env or Render environment variables.")
-    from app.rag import get_rag_chain
-    rag_chain = get_rag_chain()
-    logger.info(f"[lazy-init] RAG chain ready! Provider: {provider.upper()}")
+    # If warmup is still in progress, wait for it (up to 120s)
+    for _ in range(120):
+        import time
+        time.sleep(1)
+        if rag_chain is not None:
+            return
+        if not _rag_loading:
+            break
+    if rag_chain is None:
+        # Warmup didn't work, try loading synchronously
+        _warmup_rag_chain()
+    if rag_chain is None:
+        raise RuntimeError("RAG chain could not be initialized. Check GOOGLE_API_KEY.")
 
 
 # --- FastAPI App ---
