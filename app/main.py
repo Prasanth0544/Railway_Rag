@@ -34,12 +34,8 @@ logger = get_logger("app.main")
 # Load environment variables before anything else
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
 
-# --- Module-level app sub-imports (avoids per-request import overhead) ---
-from app.intent import classify_intent                                          # noqa: E402
-from app.ntes_client import get_train_running_status, format_live_status_for_llm  # noqa: E402
-from app.pnr_client import get_pnr_status, format_pnr_status_for_llm           # noqa: E402
-from app.rag import SYSTEM_PROMPT, HUMAN_PROMPT, format_docs, get_sources      # noqa: E402
-from langchain_core.prompts import ChatPromptTemplate                           # noqa: E402
+# Heavy imports deferred to first use — keeps startup fast so Render detects the port quickly
+# (app.rag, app.retriever, app.intent, app.ntes_client, app.pnr_client are imported inside functions)
 
 
 
@@ -110,42 +106,29 @@ _HISTORY_MAX_TURNS = 5  # keep last 5 exchanges per session
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize RAG chain once at startup, cleanup on shutdown."""
-    global rag_chain
-
-    logger.info("Railway RAG Assistant -- Starting up...")
-    logger.info("=" * 50)
-
-    provider = os.getenv("LLM_PROVIDER", "gemini").lower()
-    logger.info(f"LLM Provider: {provider.upper()}")
-
-    if provider == "gemini":
-        api_key = os.getenv("GOOGLE_API_KEY", "")
-        if not api_key or api_key == "your-gemini-api-key-here":
-            logger.error("GOOGLE_API_KEY not set! Please update your .env file.")
-            logger.error("Get a free key at: https://aistudio.google.com")
-        else:
-            from app.rag import get_rag_chain
-            rag_chain = get_rag_chain()
-            logger.info("RAG chain ready! (Gemini)")
-    else:
-        # LM Studio -- no API key needed
-        base_url = os.getenv("LOCAL_API_BASE", "http://localhost:1234/v1")
-        logger.info(f"LM Studio: {base_url}")
-        logger.warning("Make sure LM Studio is running with a model loaded!")
-        from app.rag import get_rag_chain
-        rag_chain = get_rag_chain()
-        logger.info("RAG chain ready! (LM Studio)")
-
-    logger.info("=" * 50)
-    logger.info("API is live at http://localhost:8000")
-    logger.info("Swagger UI at http://localhost:8000/docs")
-
+    """Lightweight startup — bind port first, init RAG on first request."""
+    logger.info("Railway RAG Assistant -- Starting up (lazy mode)...")
+    logger.info("Port will open immediately. RAG chain loads on first request.")
+    logger.info("API is live — Swagger UI at /docs")
     yield  # App runs here
-
-    # Shutdown
     logger.info("Shutting down Railway RAG Assistant...")
+    global rag_chain
     rag_chain = None
+
+
+def _ensure_rag_chain():
+    """Lazy-initialize the RAG chain on first use."""
+    global rag_chain
+    if rag_chain is not None:
+        return
+    logger.info("[lazy-init] Loading RAG chain for first time...")
+    provider = os.getenv("LLM_PROVIDER", "gemini").lower()
+    api_key = os.getenv("GOOGLE_API_KEY", "")
+    if provider == "gemini" and (not api_key or api_key == "your-gemini-api-key-here"):
+        raise RuntimeError("GOOGLE_API_KEY is not set. Add it in your .env or Render environment variables.")
+    from app.rag import get_rag_chain
+    rag_chain = get_rag_chain()
+    logger.info(f"[lazy-init] RAG chain ready! Provider: {provider.upper()}")
 
 
 # --- FastAPI App ---
@@ -246,11 +229,10 @@ async def ask_question(request: QuestionRequest):
     - What is the luggage allowance for Sleeper class?
     - What are the responsibilities of a TTE?
     """
-    if rag_chain is None:
-        raise HTTPException(
-            status_code=503,
-            detail="RAG chain not initialized. Check your GOOGLE_API_KEY in .env",
-        )
+    try:
+        _ensure_rag_chain()
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
 
     try:
         import time
@@ -285,8 +267,10 @@ async def ask_question_stream(request: QuestionRequest):
     from fastapi.responses import StreamingResponse
     import json, time
 
-    if rag_chain is None:
-        raise HTTPException(status_code=503, detail="RAG chain not initialized.")
+    try:
+        _ensure_rag_chain()
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
 
     async def event_stream():
         try:
@@ -359,8 +343,10 @@ async def ask_question_smart(request: QuestionRequest, raw_request: Request):
     from app.intent import classify_intent
     from app.ntes_client import get_train_running_status, format_live_status_for_llm
 
-    if rag_chain is None:
-        raise HTTPException(status_code=503, detail="RAG chain not initialized.")
+    try:
+        _ensure_rag_chain()
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
 
     # Get session key (fallback to client IP)
     client_ip = raw_request.client.host if raw_request.client else "unknown"
