@@ -21,11 +21,25 @@ except ImportError:
 CACHE_TTL_SECONDS = 600  # 10 minutes
 _pnr_cache: Dict[str, Dict[str, Any]] = {}
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
-}
+# Rotate user-agents to reduce cloud IP detection / rate limiting
+import random
+_USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+]
+
+def _get_headers(referrer: str = "https://www.irctc.co.in/") -> dict:
+    return {
+        "User-Agent": random.choice(_USER_AGENTS),
+        "Accept": "application/json, text/html, */*",
+        "Accept-Language": "en-IN,en;q=0.9,hi;q=0.8",
+        "Referer": referrer,
+        "Origin": referrer.rstrip("/"),
+    }
+
+HEADERS = _get_headers()  # default fallback
 
 
 def get_pnr_status(pnr: str) -> dict:
@@ -48,13 +62,25 @@ def get_pnr_status(pnr: str) -> dict:
     if cached:
         return cached
 
-    # Try ConfirmTkt API
+    # 1. Try ConfirmTkt JSON API (fastest)
     result = _fetch_confirmtkt(pnr)
     if result and result.get("success"):
         _set_cache(pnr, result)
         return result
 
-    # Try RailYatri Fallback
+    # 2. Try erail.in JSON API
+    result = _fetch_erail_pnr(pnr)
+    if result and result.get("success"):
+        _set_cache(pnr, result)
+        return result
+
+    # 3. Try IRCTC official endpoint
+    result = _fetch_irctc_pnr(pnr)
+    if result and result.get("success"):
+        _set_cache(pnr, result)
+        return result
+
+    # 4. Try RailYatri HTML scraper (last resort)
     result = _fetch_railyatri_scraper(pnr)
     if result and result.get("success"):
         _set_cache(pnr, result)
@@ -63,7 +89,7 @@ def get_pnr_status(pnr: str) -> dict:
     return {
         "success": False,
         "pnr": pnr,
-        "error": "PNR status currently unavailable. Make sure PNR is valid and try again later.",
+        "error": "PNR status unavailable from all sources. Indian Railways APIs block cloud server IPs after a few requests. Try again after 30 minutes or use the IRCTC app.",
         "fetched_at": datetime.now().isoformat(),
         "from_cache": False
     }
@@ -96,7 +122,7 @@ def _fetch_confirmtkt(pnr: str) -> Optional[dict]:
     """Fetch PNR status from ConfirmTkt backend JSON API."""
     url = f"https://api.confirmtkt.com/api/pnr/pnrstatus?pnrNo={pnr}"
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=10)
+        resp = requests.get(url, headers=_get_headers("https://www.confirmtkt.com/"), timeout=10)
         logger.info(f"[PNR] ConfirmTkt URL: {url} -> HTTP {resp.status_code}")
         if resp.status_code == 200:
             data = resp.json()
@@ -133,7 +159,86 @@ def _fetch_confirmtkt(pnr: str) -> Optional[dict]:
     return None
 
 
+def _fetch_erail_pnr(pnr: str) -> Optional[dict]:
+    """Fetch PNR status from erail.in JSON API."""
+    url = f"https://erail.in/rail/checkPNRStatus.aspx?PNRNo={pnr}&UIType=HTML&DataSource=0&StartStn=0&EndStn=0"
+    try:
+        resp = requests.get(url, headers=_get_headers("https://erail.in/"), timeout=10)
+        logger.info(f"[PNR] erail.in URL: {url} -> HTTP {resp.status_code}")
+        if resp.status_code == 200 and resp.text:
+            # erail returns pipe-delimited text: TRAIN_NO|TRAIN_NAME|DATE|FROM|TO|CLASS|...
+            text = resp.text.strip()
+            if "|" in text and len(text) > 10:
+                parts = text.split("|")
+                # Basic check that it looks like PNR data
+                if len(parts) >= 6 and parts[0].strip().isdigit():
+                    return {
+                        "success": True,
+                        "source": "erail.in",
+                        "pnr": pnr,
+                        "train_no": parts[0].strip(),
+                        "train_name": parts[1].strip() if len(parts) > 1 else "",
+                        "date_of_journey": parts[2].strip() if len(parts) > 2 else "",
+                        "from_station": parts[3].strip() if len(parts) > 3 else "",
+                        "to_station": parts[4].strip() if len(parts) > 4 else "",
+                        "booking_class": parts[5].strip() if len(parts) > 5 else "",
+                        "boarding_station": parts[3].strip() if len(parts) > 3 else "",
+                        "chart_prepared": False,
+                        "passengers": [],
+                        "fetched_at": datetime.now().isoformat(),
+                        "from_cache": False,
+                    }
+    except Exception as e:
+        logger.info(f"[PNR] erail.in error: {e}")
+    return None
+
+
+def _fetch_irctc_pnr(pnr: str) -> Optional[dict]:
+    """Fetch PNR status from IRCTC official public API."""
+    url = f"https://www.irctc.co.in/eticketing/protected/mapps1/pnrstatus/{pnr}"
+    try:
+        resp = requests.get(url, headers=_get_headers("https://www.irctc.co.in/"), timeout=10)
+        logger.info(f"[PNR] IRCTC URL: {url} -> HTTP {resp.status_code}")
+        if resp.status_code == 200:
+            try:
+                data = resp.json()
+                if isinstance(data, dict) and data.get("pnrNumber"):
+                    pax_list = data.get("passengerList", [])
+                    passengers = [
+                        {
+                            "passenger_no": idx + 1,
+                            "booking_status": p.get("bookingStatusDetails", ""),
+                            "current_status": p.get("currentStatusDetails", ""),
+                            "coach": p.get("coachId", ""),
+                            "berth": p.get("seatNo", 0),
+                        }
+                        for idx, p in enumerate(pax_list)
+                    ]
+                    return {
+                        "success": True,
+                        "source": "IRCTC",
+                        "pnr": pnr,
+                        "train_no": str(data.get("trainNumber", "")),
+                        "train_name": data.get("trainName", ""),
+                        "date_of_journey": data.get("dateOfJourney", ""),
+                        "booking_class": data.get("ticketClass", ""),
+                        "from_station": data.get("boardingStationName", ""),
+                        "to_station": data.get("reservedUptoName", ""),
+                        "boarding_station": data.get("boardingStationName", ""),
+                        "chart_prepared": data.get("chartPrepared", False),
+                        "passengers": passengers,
+                        "fetched_at": datetime.now().isoformat(),
+                        "from_cache": False,
+                    }
+            except Exception:
+                pass
+    except Exception as e:
+        logger.info(f"[PNR] IRCTC error: {e}")
+    return None
+
+
 def _fetch_railyatri_scraper(pnr: str) -> Optional[dict]:
+
     """Scrape PNR status from RailYatri HTML page."""
     url = f"https://www.railyatri.in/pnr-status/{pnr}"
     try:
