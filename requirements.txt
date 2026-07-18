@@ -29,3 +29,6 @@ Pillow                          # Image processing for multi-modal uploads (PNG/
 
 # ── Optional: Offline/Local Embeddings (LM Studio mode)
 sentence-transformers         # For USE_LOCAL_EMBEDDINGS=true (offline, no rate limits)
+
+# ── Streamlit UI for Cloud Hosting ───────────────────
+streamlit
