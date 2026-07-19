@@ -287,7 +287,7 @@ async def ask_question(request: QuestionRequest):
             **result,
             response_time_ms=elapsed_ms,
             avg_relevance_score=avg_score,
-            llm_model=os.getenv("LOCAL_MODEL_NAME", "gemini-1.5-flash"),
+            llm_model=os.getenv("GEMINI_MODEL", os.getenv("LOCAL_MODEL_NAME", "gemini-3.1-flash-lite")),
             embedding_model="all-MiniLM-L6-v2",
         )
     except Exception as e:
@@ -329,7 +329,7 @@ async def ask_question_stream(request: QuestionRequest):
                 "num_documents_retrieved": len(docs),
                 "avg_relevance_score": avg_score,
                 "sources": sources,
-                "llm_model": os.getenv("LOCAL_MODEL_NAME", "gemini-1.5-flash"),
+                "llm_model": os.getenv("GEMINI_MODEL", os.getenv("LOCAL_MODEL_NAME", "gemini-3.1-flash-lite")),
                 "embedding_model": "all-MiniLM-L6-v2",
             }
             yield f"data: {json.dumps(meta)}\n\n"
