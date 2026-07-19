@@ -1126,3 +1126,38 @@ updateCharCount();
 checkHealth();
 initVoiceInput();
 restoreChatHistory();
+
+// ─── Mobile Sidebar Toggle ─────────────────────────────────────
+function openSidebar() {
+  sidebar.classList.add('open');
+  sidebarOverlay.classList.add('active');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeSidebar() {
+  sidebar.classList.remove('open');
+  sidebarOverlay.classList.remove('active');
+  document.body.style.overflow = '';
+}
+
+if (menuToggle) {
+  menuToggle.addEventListener('click', () => {
+    sidebar.classList.contains('open') ? closeSidebar() : openSidebar();
+  });
+}
+
+if (sidebarOverlay) {
+  sidebarOverlay.addEventListener('click', closeSidebar);
+}
+
+// Close sidebar on ESC key
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && sidebar.classList.contains('open')) closeSidebar();
+});
+
+// Close sidebar when a chip is clicked on mobile (nice UX)
+chipButtons.forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (window.innerWidth <= 768) closeSidebar();
+  });
+});
