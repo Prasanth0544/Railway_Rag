@@ -234,7 +234,7 @@ def get_llm():
     """
     Return the configured LLM.
 
-    LLM_PROVIDER=gemini   → ChatGoogleGenerativeAI (gemini-1.5-flash)
+    LLM_PROVIDER=gemini   → ChatGoogleGenerativeAI (gemini-3.1-flash)
     LLM_PROVIDER=lmstudio → ChatOpenAI pointing at http://localhost:1234
     """
     provider = os.getenv("LLM_PROVIDER", "gemini").lower().strip()

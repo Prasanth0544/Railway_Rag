@@ -87,7 +87,23 @@ input, textarea { font: inherit; }
   background: var(--bg2);
   border-right: 1px solid var(--border);
   overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(16,185,129,0.45) transparent;
 }
+[data-theme="dark"] .sidebar {
+  scrollbar-color: rgba(16,185,129,0.3) transparent;
+}
+.sidebar::-webkit-scrollbar { width: 4px; }
+.sidebar::-webkit-scrollbar-track { background: transparent; }
+.sidebar::-webkit-scrollbar-thumb {
+  border-radius: 10px;
+  background: rgba(16, 185, 129, 0.45);
+}
+[data-theme="dark"] .sidebar::-webkit-scrollbar-thumb {
+  background: rgba(16, 185, 129, 0.3);
+}
+
 
 /* Brand */
 .brand {
@@ -303,10 +319,11 @@ input:focus {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 24px 32px 16px;
+  padding: 10px 32px 8px;
   border-bottom: 1px solid var(--border);
   gap: 16px;
   flex-shrink: 0;
+  min-height: 0;
 }
 
 
@@ -334,7 +351,7 @@ input:focus {
   display: flex;
   flex-wrap: nowrap;
   gap: 8px;
-  padding: 14px 32px;
+  padding: 8px 32px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   overflow-x: auto;
@@ -365,11 +382,27 @@ input:focus {
 /* ─── CHAT AREA ───────────────────────────────────────── */
 .chat-area {
   overflow-y: auto;
-  padding: 24px 32px;
+  overflow-x: hidden;
+  padding: 20px 32px;
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 20px;
   scroll-behavior: smooth;
+  /* Styled scrollbar — light theme */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(16,185,129,0.45) transparent;
+}
+[data-theme="dark"] .chat-area {
+  scrollbar-color: rgba(16,185,129,0.3) transparent;
+}
+.chat-area::-webkit-scrollbar { width: 5px; }
+.chat-area::-webkit-scrollbar-track { background: transparent; }
+.chat-area::-webkit-scrollbar-thumb {
+  border-radius: 10px;
+  background: rgba(16, 185, 129, 0.45);
+}
+[data-theme="dark"] .chat-area::-webkit-scrollbar-thumb {
+  background: rgba(16, 185, 129, 0.3);
 }
 
 /* Empty state */
@@ -455,6 +488,8 @@ input:focus {
 .answer-content {
   flex: 1;
   min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .answer-card {
@@ -463,6 +498,8 @@ input:focus {
   background: var(--bg2);
   border: 1px solid var(--border);
   box-shadow: var(--shadow-sm);
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 /* Markdown-rendered answer text */
@@ -470,6 +507,8 @@ input:focus {
   font-size: 0.97rem;
   line-height: 1.7;
   color: var(--ink);
+  word-break: break-word;
+  overflow-wrap: break-word;
 }
 
 .answer-text p { margin: 0 0 12px; }

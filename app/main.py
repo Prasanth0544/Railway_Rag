@@ -884,7 +884,7 @@ async def health_check():
             pass
 
     provider   = os.getenv("LLM_PROVIDER", "gemini")
-    llm_model  = os.getenv("LOCAL_MODEL_NAME", "gemini-1.5-flash") if provider == "lmstudio" else os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+    llm_model  = os.getenv("LOCAL_MODEL_NAME", "gemini-3.1-flash-lite") if provider == "lmstudio" else os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
     col_summary = [f"{k} ({v} docs)" for k, v in collections_detail.items()]
     status_msg  = f"LLM: {provider.upper()} | ChromaDB collections: {col_summary or 'none — run create_embeddings.py'}"
 
