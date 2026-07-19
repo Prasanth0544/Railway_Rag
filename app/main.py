@@ -381,6 +381,7 @@ async def ask_question_smart(request: QuestionRequest, raw_request: Request):
     import json, time
     from app.intent import classify_intent
     from app.ntes_client import get_train_running_status, format_live_status_for_llm
+    from app.pnr_client import get_pnr_status, format_pnr_status_for_llm
 
     try:
         _ensure_rag_chain()
@@ -899,3 +900,4 @@ async def health_check():
         total_documents=total_docs,
         collections=collections_detail,
     )
+
