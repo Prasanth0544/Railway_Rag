@@ -1113,11 +1113,12 @@ function restoreChatHistory() {
 const savedBase  = localStorage.getItem(STORAGE_KEY);
 const savedTheme = localStorage.getItem(THEME_KEY);
 
-if (savedBase) {
+const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+
+if (savedBase && (isLocal || !savedBase.includes('localhost') && !savedBase.includes('127.0.0.1'))) {
   apiBaseInput.value = savedBase;
 } else {
   // Auto-detect: use same origin when deployed (Render/cloud), localhost only for local dev
-  const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
   apiBaseInput.value = isLocal ? 'http://localhost:8000' : location.origin;
 }
 if (savedTheme) document.documentElement.dataset.theme = savedTheme;
