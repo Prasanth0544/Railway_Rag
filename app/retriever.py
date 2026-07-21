@@ -42,7 +42,10 @@ CHROMA_DB_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "chroma
 ALL_COLLECTIONS = ["railway_rules", "trains", "stations", "train_routes", "references"]
 
 # Results to pull per collection before merging
-PER_COLLECTION_K = 8
+PER_COLLECTION_K = 5  # reduced from 8 to lower per-query memory usage
+
+# Max docs returned from a single keyword $contains scan (prevent unbounded fetches)
+KEYWORD_SCAN_LIMIT = 30
 
 
 # ─────────────────────────────────────────────
@@ -451,7 +454,10 @@ class UnifiedRetriever:
                                 continue
                             try:
                                 col = self.client.get_collection(name)
-                                res = col.get(where_document={"$contains": term})
+                                res = col.get(
+                                    where_document={"$contains": term},
+                                    limit=KEYWORD_SCAN_LIMIT,  # cap to avoid OOM on large collections
+                                )
                                 if res["documents"]:
                                     logger.debug(f"[KEYWORD] Found {len(res['documents'])} matches in '{name}' containing '{term}'")
                                     for i in range(len(res["documents"])):

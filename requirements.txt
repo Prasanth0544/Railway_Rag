@@ -27,8 +27,12 @@ pydantic-settings               # Config validation (app/config.py)
 google-genai                    # New unified Gemini SDK (replaces deprecated google-generativeai)
 Pillow                          # Image processing for multi-modal uploads (PNG/JPG/WEBP)
 
-# ── Optional: Offline/Local Embeddings (LM Studio mode)
-sentence-transformers         # For USE_LOCAL_EMBEDDINGS=true (offline, no rate limits)
+# ── Optional: Offline/Local Embeddings (LM Studio mode only) ────────────────
+# sentence-transformers  # ← DISABLED on Render (saves ~400MB RAM).
+#                          Install manually if using USE_LOCAL_EMBEDDINGS=true locally.
+#                          pip install sentence-transformers
 
-# ── Streamlit UI for Cloud Hosting ───────────────────
-streamlit
+# ── Streamlit UI (local dev only) ────────────────────────────────────────────
+# streamlit              # ← DISABLED on Render (saves ~150MB RAM).
+#                          Install manually for local Streamlit UI:
+#                          pip install streamlit

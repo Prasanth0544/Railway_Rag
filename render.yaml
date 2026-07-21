@@ -5,7 +5,7 @@ services:
     region: singapore          # Closest to India
     plan: free
     buildCommand: "chmod +x build.sh && bash build.sh"
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1 --timeout-keep-alive 75
     envVars:
       - key: GOOGLE_API_KEY
         sync: false            # Set manually in Render dashboard
@@ -16,8 +16,12 @@ services:
       - key: USE_LOCAL_EMBEDDINGS
         value: "false"         # Use Gemini cloud embeddings — saves ~400MB RAM
       - key: HF_HUB_OFFLINE
-        value: "0"             # Not needed — no local models
+        value: "1"             # Block any accidental HuggingFace model downloads
       - key: TRANSFORMERS_OFFLINE
-        value: "0"             # Not needed — no local models
+        value: "1"             # Block any accidental transformers downloads
       - key: PYTHONUNBUFFERED
         value: "1"             # Force logs to flush immediately
+      - key: PYTHONDONTWRITEBYTECODE
+        value: "1"             # Skip .pyc file generation — saves disk & RAM
+      - key: MALLOC_ARENA_MAX
+        value: "2"             # Limit glibc memory arenas on Linux — saves ~30-50MB

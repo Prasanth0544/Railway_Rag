@@ -25,7 +25,7 @@ from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv  # type: ignore[import-untyped]
-import pandas as pd  # type: ignore[import-untyped]
+# pandas is imported lazily inside load_csv() to avoid loading ~40MB at startup
 
 from app.logger import get_logger
 logger = get_logger("app.main")
@@ -208,6 +208,7 @@ DATA_COLLECTIONS_DIR = os.getenv(
 
 def load_csv(filename: str, directory: str = None) -> list[dict]:
     """Load a CSV file and return as list of dicts."""
+    import pandas as pd  # lazy import — keeps startup RAM low
     base_dir = directory or DATA_DIR
     filepath = os.path.join(base_dir, filename)
     if not os.path.exists(filepath):
