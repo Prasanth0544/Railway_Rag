@@ -31,7 +31,7 @@ DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 
 DATA_COLLECTIONS_DIR = os.getenv(
     "DATA_COLLECTIONS_DIR",
-    r"C:\Users\prasa\Documents\RailWayData\csv_of_railway\data_collections",
+    DATA_DIR,
 )
 
 

@@ -192,6 +192,19 @@ class UnifiedRetriever:
             from scripts.preprocess import build_station_lookup
             
             lookup = build_station_lookup()
+            if not lookup and "stations" in self.vector_stores:
+                try:
+                    col = self.client.get_collection("stations")
+                    data = col.get(limit=15000, include=["metadatas"])
+                    if data and data.get("metadatas"):
+                        for meta in data["metadatas"]:
+                            code = meta.get("station_code")
+                            name = meta.get("station_name")
+                            if code and name:
+                                lookup[code] = {"name": name, "aka": []}
+                except Exception as exc:
+                    logger.warning(f"[WARN] Failed to load stations from ChromaDB fallback: {exc}")
+
             self.station_names_to_code = {}
             self.all_station_names = []
             
@@ -461,9 +474,30 @@ class UnifiedRetriever:
                                 if res["documents"]:
                                     logger.debug(f"[KEYWORD] Found {len(res['documents'])} matches in '{name}' containing '{term}'")
                                     for i in range(len(res["documents"])):
+                                        content_raw = res["documents"][i]
+                                        content_lower = content_raw.lower()
+                                        
+                                        # 1. Term frequency factor (normalized, max +0.20)
+                                        freq = content_lower.count(term.lower())
+                                        freq_score = min(freq / 5.0, 1.0)
+                                        
+                                        # 2. Multi-term bonus (if both name and code are in text, +0.10)
+                                        all_terms_present = all(t.lower() in content_lower for t in search_terms if t)
+                                        multi_bonus = 0.10 if all_terms_present else 0.0
+                                        
+                                        # 3. Collection weight
+                                        col_weight = 1.0 if name == "train_routes" else 0.85
+                                        
+                                        base_score = 0.70 + (0.20 * freq_score) + multi_bonus
+                                        final_score = round(base_score * col_weight, 4)
+                                        
+                                        # Cutoff threshold — ignore weak keyword matches (e.g. single off-hand mention in rules)
+                                        if final_score < 0.75:
+                                            continue
+                                            
                                         doc = Document(
-                                            page_content=res["documents"][i],
-                                            metadata={**res["metadatas"][i], "collection": name, "relevance_score": 0.95}
+                                            page_content=content_raw,
+                                            metadata={**res["metadatas"][i], "collection": name, "relevance_score": final_score}
                                         )
                                         keyword_docs.append(doc)
                             except Exception as exc:
