@@ -252,6 +252,16 @@ async def root():
     )
 
 
+@app.get("/health", response_model=HealthResponse, tags=["Health"])
+async def health():
+    """Health check endpoint — called by the web UI on load."""
+    return HealthResponse(
+        status="ok",
+        message="Railway RAG Assistant is running! Use POST /ask to query.",
+        version="1.0.0",
+    )
+
+
 @app.post("/ask", response_model=AnswerResponse, tags=["RAG"])
 async def ask_question(request: QuestionRequest):
     """
