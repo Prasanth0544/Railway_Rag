@@ -413,6 +413,33 @@ async def ask_question_smart(request: QuestionRequest, raw_request: Request):
             intent = intent_res["intent"]
             train_no = intent_res["train_no"]
 
+            # Instant handling for off-topic non-railway queries (closed-domain guardrail)
+            if intent == "OUT_OF_DOMAIN":
+                meta = {
+                    "type": "meta",
+                    "intent": "OUT_OF_DOMAIN",
+                    "confidence": 1.0,
+                    "train_no": None,
+                    "num_documents_retrieved": 0,
+                    "avg_relevance_score": 0.0,
+                    "sources": [],
+                    "warnings": [],
+                    "llm_model": os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"),
+                    "embedding_model": "all-MiniLM-L6-v2",
+                }
+                yield f"data: {json.dumps(meta)}\n\n"
+
+                refusal = (
+                    "⚠️ **This is a closed-domain assistant for Indian Railways only.**\n\n"
+                    "I can only assist with Indian Railways information — such as train schedules, "
+                    "routes, live running status, PNR status, fares, luggage rules, or ticket cancellation policies.\n\n"
+                    "Please ask a railway-related question!"
+                )
+                yield f"data: {json.dumps({'type': 'token', 'token': refusal})}\n\n"
+                elapsed_ms = round((time.time() - t0) * 1000, 1)
+                yield f"data: {json.dumps({'type': 'done', 'response_time_ms': elapsed_ms})}\n\n"
+                return
+
             # If train number isn't explicitly mentioned, try to load it from the session context
             if not train_no:
                 train_no = _session_last_train.get(session_key)

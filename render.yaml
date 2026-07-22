@@ -14,11 +14,11 @@ services:
       - key: GEMINI_MODEL
         value: gemini-3.1-flash-lite
       - key: USE_LOCAL_EMBEDDINGS
-        value: "false"         # Use Gemini cloud embeddings — saves ~400MB RAM
+        value: "true"         # Matches 384-dim ChromaDB vector database
       - key: HF_HUB_OFFLINE
-        value: "1"             # Block any accidental HuggingFace model downloads
+        value: "0"             # Allow model loading for 384-dim embeddings
       - key: TRANSFORMERS_OFFLINE
-        value: "1"             # Block any accidental transformers downloads
+        value: "0"             # Allow model loading for 384-dim embeddings
       - key: PYTHONUNBUFFERED
         value: "1"             # Force logs to flush immediately
       - key: PYTHONDONTWRITEBYTECODE

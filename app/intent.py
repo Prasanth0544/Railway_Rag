@@ -30,7 +30,9 @@ STATIC_KEYWORDS = frozenset([
     "fare", "ticket price", "class", "sleeper", "ac", "general", "quota",
     "stops of", "schedule of", "timetable", "route of", "passing through",
     "how to book", "senior citizen", "concession", "tatkal", "premium tatkal",
-    "stop", "stops", "timetable", "schedule"
+    "stop", "stops", "timetable", "schedule", "pnr", "tdr", "rac", "gnwl", "pqwl",
+    "rswl", "ckwl", "cnf", "wl", "vande bharat", "shatabdi", "rajdhani", "duronto",
+    "garib rath", "jan shatabdi", "humsafar", "amrit bharat", "tejas", "rake"
 ])
 
 # ── Station keywords indicating spatial/routing queries ─────────
@@ -214,7 +216,33 @@ def classify_intent(query: str) -> dict:
         static_score += 0.4
         reasons.append("Contains train number with no specific live/station indicators (defaulting to static train view)")
 
-    # 3. Determine final intent
+    # General Railway keywords check for broad domain matching
+    GENERAL_RAILWAY_KEYWORDS = frozenset([
+        "train", "trains", "railway", "railways", "station", "stations", "platform", "pf",
+        "ticket", "tickets", "fare", "fares", "coach", "berth", "pnr", "irctc", "ntes",
+        "tte", "rac", "wl", "gnwl", "pqwl", "rswl", "ckwl", "tq", "tqwl", "cnf", "tdr",
+        "tatkal", "sleeper", "ac", "general", "quota", "luggage", "baggage", "cancellation",
+        "refund", "schedule", "timetable", "delay", "delayed", "running", "status", "route",
+        "routes", "passengers", "passenger", "catering", "pantry", "vande bharat", "tejas",
+        "shatabdi", "rajdhani", "duronto", "garib rath", "jan shatabdi", "humsafar",
+        "amrit bharat", "sampark kranti", "suburban", "express", "mail", "superfast", "sf",
+        "loco", "engine", "rake", "wagon", "rpf", "cris", "fois", "bpc", "cantt", "junction", "jn"
+    ])
+    has_general_railway_kw = any(re.search(rf"\b{re.escape(kw)}\b", query_lower) for kw in GENERAL_RAILWAY_KEYWORDS)
+
+    # 3. Check for OUT_OF_DOMAIN query
+    if not train_no and not pnr and not station_detected and not live_matches and not static_matches and not routing_matches and not has_general_railway_kw:
+        return {
+            "intent": "OUT_OF_DOMAIN",
+            "confidence": 1.0,
+            "train_no": None,
+            "station_code": None,
+            "pnr": None,
+            "is_pnr": False,
+            "reasons": ["No railway signals (trains, stations, PNR, rules, or railway keywords) found in query"]
+        }
+
+    # 4. Determine final intent
     if live_score > 0.05 and static_score > 0.05:
         intent = "HYBRID"
         confidence = min(1.0, (live_score + static_score) / 2.0)
