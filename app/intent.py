@@ -30,7 +30,7 @@ STATIC_KEYWORDS = frozenset([
     "fare", "ticket price", "class", "sleeper", "ac", "general", "quota",
     "stops of", "schedule of", "timetable", "route of", "passing through",
     "how to book", "senior citizen", "concession", "tatkal", "premium tatkal",
-    "stop", "stops", "timetable", "schedule", "pnr", "tdr", "rac", "gnwl", "pqwl",
+    "stop", "stops", "timetable", "schedule", "tdr", "rac", "gnwl", "pqwl",
     "rswl", "ckwl", "cnf", "wl", "vande bharat", "shatabdi", "rajdhani", "duronto",
     "garib rath", "jan shatabdi", "humsafar", "amrit bharat", "tejas", "rake"
 ])
