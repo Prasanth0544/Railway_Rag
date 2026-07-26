@@ -24,7 +24,9 @@ _live_cache: dict[str, dict] = {}
 CACHE_TTL_SECONDS = 300  # 5 minutes
 
 # ── HTTP config ───────────────────────────────────────────────────
-REQUEST_TIMEOUT = 8  # seconds
+# Connect timeout: 3s (fail fast if IP is blocked — Render data-center IPs are blocked by NTES)
+# Read timeout:    20s (wait longer for slow but accessible servers — local/VPS)
+REQUEST_TIMEOUT = (3, 20)  # (connect_timeout, read_timeout) in seconds
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "

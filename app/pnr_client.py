@@ -21,6 +21,9 @@ except ImportError:
 CACHE_TTL_SECONDS = 600  # 10 minutes
 _pnr_cache: Dict[str, Dict[str, Any]] = {}
 
+# HTTP timeout: 3s connect (fail fast if IP blocked), 20s read (patient for slow servers)
+REQUEST_TIMEOUT = (3, 20)
+
 # Rotate user-agents to reduce cloud IP detection / rate limiting
 import random
 _USER_AGENTS = [
@@ -122,7 +125,7 @@ def _fetch_confirmtkt(pnr: str) -> Optional[dict]:
     """Fetch PNR status from ConfirmTkt backend JSON API."""
     url = f"https://api.confirmtkt.com/api/pnr/pnrstatus?pnrNo={pnr}"
     try:
-        resp = requests.get(url, headers=_get_headers("https://www.confirmtkt.com/"), timeout=10)
+        resp = requests.get(url, headers=_get_headers("https://www.confirmtkt.com/"), timeout=REQUEST_TIMEOUT)
         logger.info(f"[PNR] ConfirmTkt URL: {url} -> HTTP {resp.status_code}")
         if resp.status_code == 200:
             data = resp.json()
@@ -163,7 +166,7 @@ def _fetch_erail_pnr(pnr: str) -> Optional[dict]:
     """Fetch PNR status from erail.in JSON API."""
     url = f"https://erail.in/rail/checkPNRStatus.aspx?PNRNo={pnr}&UIType=HTML&DataSource=0&StartStn=0&EndStn=0"
     try:
-        resp = requests.get(url, headers=_get_headers("https://erail.in/"), timeout=10)
+        resp = requests.get(url, headers=_get_headers("https://erail.in/"), timeout=REQUEST_TIMEOUT)
         logger.info(f"[PNR] erail.in URL: {url} -> HTTP {resp.status_code}")
         if resp.status_code == 200 and resp.text:
             # erail returns pipe-delimited text: TRAIN_NO|TRAIN_NAME|DATE|FROM|TO|CLASS|...
@@ -197,7 +200,7 @@ def _fetch_irctc_pnr(pnr: str) -> Optional[dict]:
     """Fetch PNR status from IRCTC official public API."""
     url = f"https://www.irctc.co.in/eticketing/protected/mapps1/pnrstatus/{pnr}"
     try:
-        resp = requests.get(url, headers=_get_headers("https://www.irctc.co.in/"), timeout=10)
+        resp = requests.get(url, headers=_get_headers("https://www.irctc.co.in/"), timeout=REQUEST_TIMEOUT)
         logger.info(f"[PNR] IRCTC URL: {url} -> HTTP {resp.status_code}")
         if resp.status_code == 200:
             try:
@@ -242,7 +245,7 @@ def _fetch_railyatri_scraper(pnr: str) -> Optional[dict]:
     """Scrape PNR status from RailYatri HTML page."""
     url = f"https://www.railyatri.in/pnr-status/{pnr}"
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=10)
+        resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
         logger.info(f"[PNR] RailYatri URL: {url} -> HTTP {resp.status_code}")
         if resp.status_code == 200 and resp.text:
             if BeautifulSoup is None:
