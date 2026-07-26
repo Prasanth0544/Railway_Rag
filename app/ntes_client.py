@@ -43,7 +43,8 @@ HEADERS = {
 # API: IRCTC | INDIAN RAILWAY PNR STATUS (irctc-indian-railway-pnr-status.p.rapidapi.com)
 # Endpoint: GET /live-train/{trainNo}/status
 # Params: startDay (0=today, 1=yesterday), from (station code), date (DD-MMM-YYYY)
-RAPIDAPI_KEY  = os.getenv("RAPIDAPI_KEY", "")
+RAPIDAPI_KEY  = os.getenv("RAPIDAPI_KEY", "").strip()   # strip() removes accidental trailing \n from Render env var paste
+
 RAPIDAPI_HOST = "irctc-indian-railway-pnr-status.p.rapidapi.com"
 RAPIDAPI_BASE = f"https://{RAPIDAPI_HOST}"
 
