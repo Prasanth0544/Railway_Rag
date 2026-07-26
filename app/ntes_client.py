@@ -40,9 +40,12 @@ HEADERS = {
 }
 
 # ── RapidAPI config ───────────────────────────────────────────────
+# API: IRCTC | INDIAN RAILWAY PNR STATUS (irctc-indian-railway-pnr-status.p.rapidapi.com)
+# Endpoint: GET /live-train/{trainNo}/status
+# Params: startDay (0=today, 1=yesterday), from (station code), date (DD-MMM-YYYY)
 RAPIDAPI_KEY  = os.getenv("RAPIDAPI_KEY", "")
-RAPIDAPI_HOST = "indian-railway-irctc.p.rapidapi.com"
-RAPIDAPI_BASE = f"https://{RAPIDAPI_HOST}/api/trains/v1/train"
+RAPIDAPI_HOST = "irctc-indian-railway-pnr-status.p.rapidapi.com"
+RAPIDAPI_BASE = f"https://{RAPIDAPI_HOST}"
 
 ERAIL_TRAIN_ENDPOINT = "https://erail.in/rail/getTrains.aspx"
 
@@ -260,44 +263,51 @@ def get_station_live_board(station_code: str, board_type: str = "ARR") -> dict:
 
 def _fetch_rapidapi(train_no: str) -> Optional[dict]:
     """
-    Fetch live running status from RapidAPI Indian Railways.
-    Endpoint: GET /api/trains/v1/train/status?train_number=XXXXX&departure_date=YYYYMMDD
+    Fetch live running status from RapidAPI.
+    API: IRCTC | INDIAN RAILWAY PNR STATUS
+    Host: irctc-indian-railway-pnr-status.p.rapidapi.com
+    Endpoint: GET /live-train/{trainNo}/status
+    Params: startDay (0=today, 1=yesterday)
     Works from cloud server IPs (Render, Heroku, etc.).
     """
     if not RAPIDAPI_KEY:
         return None
 
-    today = datetime.now().strftime("%Y%m%d")
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
-
-    for date_str in [today, yesterday]:
+    # Try today first, then yesterday (train may have started previous day)
+    for start_day in [0, 1]:
         try:
+            url = f"{RAPIDAPI_BASE}/live-train/{train_no}/status"
             resp = requests.get(
-                f"{RAPIDAPI_BASE}/status",
-                params={"train_number": train_no, "departure_date": date_str},
+                url,
+                params={"startDay": start_day},
                 headers={
+                    "Content-Type": "application/json",
                     "x-rapidapi-key": RAPIDAPI_KEY,
                     "x-rapidapi-host": RAPIDAPI_HOST,
                 },
                 timeout=REQUEST_TIMEOUT,
             )
-            logger.info(f"[NTES] RapidAPI → HTTP {resp.status_code} (date={date_str})")
+            logger.info(f"[NTES] RapidAPI → HTTP {resp.status_code} (startDay={start_day})")
 
             if resp.status_code == 200:
                 data = resp.json()
-                body = data.get("body", data)
-
-                # Skip empty or error responses
-                if not body or (isinstance(body, dict) and body.get("error")):
+                # This API returns: {"success": true, "data": {...}}
+                if not data.get("success"):
+                    logger.info(f"[NTES] RapidAPI returned success=false: {data.get('message', '')}")
                     continue
 
-                return _parse_rapidapi_response(train_no, body)
+                body = data.get("data", data)
+                if not body:
+                    continue
 
-            elif resp.status_code in (404, 400):
-                # Try yesterday's date
-                continue
+                result = _parse_rapidapi_response(train_no, body)
+                if result:
+                    return result
+
+            elif resp.status_code in (404, 400, 204):
+                continue  # try next startDay
             else:
-                logger.info(f"[NTES] RapidAPI unexpected status {resp.status_code}")
+                logger.info(f"[NTES] RapidAPI unexpected HTTP {resp.status_code}")
                 break
 
         except Exception as e:
@@ -308,64 +318,96 @@ def _fetch_rapidapi(train_no: str) -> Optional[dict]:
 
 
 def _parse_rapidapi_response(train_no: str, body: dict) -> Optional[dict]:
-    """Parse RapidAPI Indian Railways live status response."""
+    """
+    Parse the IRCTC Indian Railway PNR Status API response.
+
+    Expected format:
+    {
+      "train_no": "17225",
+      "train_name": "AMARAVATHI EXP",
+      "position": "Departed from GUNDALUKAMMA(GKM) at 22:54 26-Jul",
+      "current_station": "GUNDALUKAMMA",
+      "delay_minutes": 0,
+      "progress_percent": 32,
+      "stations": [
+        {
+          "station_name": "NARASAPUR",
+          "platform": "1",
+          "arrival": "First",
+          "arrival_delay_minutes": 0,
+          "departure": "16:21",
+          "departure_delay_minutes": 1,
+          "status": "departed"
+        }, ...
+      ],
+      "running_instances": [...]
+    }
+    """
     try:
-        if isinstance(body, list) and body:
-            body = body[0]
         if not isinstance(body, dict):
             return None
 
-        train_name = (
-            body.get("train_name") or body.get("TrainName") or
-            body.get("name") or ""
-        )
-        current_stn = (
-            body.get("current_station_name") or body.get("currentStation") or
-            body.get("station_name") or body.get("curr_station") or ""
-        )
-        delay_raw = (
-            body.get("delay") or body.get("lateBy") or
-            body.get("DelayedBy") or body.get("delay_minutes") or 0
-        )
-        status_raw = (
-            body.get("status") or body.get("running_status") or
-            body.get("Status") or ""
-        )
+        train_name  = body.get("train_name", "")
+        current_stn = body.get("current_station", "")
+        position    = body.get("position", "")       # e.g. "Departed from GKM at 22:54"
+        delay_min   = int(body.get("delay_minutes") or 0)
+        progress    = body.get("progress_percent", 0)
 
-        # Extract delay from status string if numeric field is 0 but status mentions delay
-        delay_min = _parse_delay(delay_raw)
-        if delay_min == 0 and isinstance(status_raw, str):
-            dm = re.search(r"(\d+)\s*min", status_raw, re.IGNORECASE)
-            if dm:
-                delay_min = int(dm.group(1))
+        # Compute max delay from all departed stations (delay_minutes field = 0 often means
+        # the overall journey is on-time but individual stops may have delays)
+        stations_raw = body.get("stations", [])
+        if delay_min == 0 and isinstance(stations_raw, list):
+            departed_delays = [
+                stn.get("departure_delay_minutes", 0) or 0
+                for stn in stations_raw
+                if stn.get("status") == "departed"
+            ]
+            if departed_delays:
+                delay_min = departed_delays[-1]  # most recent departed station delay
 
-        # Build stations timeline from position data if available
+        # Build clean stations timeline
         stations_timeline = []
-        position_data = body.get("position") or body.get("stations") or []
-        if isinstance(position_data, list):
-            for stn in position_data:
-                if not isinstance(stn, dict):
-                    continue
-                stations_timeline.append({
-                    "name": stn.get("station_name", stn.get("name", "")),
-                    "code": stn.get("station_code", stn.get("code", "")),
-                    "platform": stn.get("platform", stn.get("platform_number", "")),
-                    "scheduled_time": stn.get("scheduled_arrival", stn.get("sched_arr", "")),
-                    "actual_time": stn.get("actual_arrival", stn.get("act_arr", "")),
-                    "delay": stn.get("delay", "On Time"),
-                })
+        for stn in (stations_raw if isinstance(stations_raw, list) else []):
+            if not isinstance(stn, dict):
+                continue
+            arr_delay = stn.get("arrival_delay_minutes") or 0
+            dep_delay = stn.get("departure_delay_minutes") or 0
+            delay_str = "On Time"
+            if dep_delay > 0:
+                delay_str = f"{dep_delay} min late"
+            elif arr_delay > 0:
+                delay_str = f"{arr_delay} min late"
+
+            stations_timeline.append({
+                "name":           stn.get("station_name", ""),
+                "code":           "",   # this API doesn't return station codes in list
+                "platform":       str(stn.get("platform") or ""),
+                "scheduled_time": stn.get("arrival", "") if stn.get("arrival") != "First" else "origin",
+                "actual_time":    stn.get("departure", "") if stn.get("departure") != "Last" else "terminus",
+                "delay":          delay_str,
+                "status":         stn.get("status", ""),  # "departed" / "upcoming" / "current"
+            })
+
+        # Build human-readable status string from position field
+        if position:
+            status_str = position
+        elif delay_min == 0:
+            status_str = "Running on time"
+        else:
+            status_str = f"{delay_min} min late"
 
         return {
-            "success": True,
-            "source": "RapidAPI",
-            "train_no": train_no,
-            "train_name": str(train_name).title() if train_name else "",
-            "current_station": str(current_stn).title() if current_stn else "",
-            "delay_minutes": delay_min,
-            "status": status_raw or ("On time" if delay_min == 0 else f"{delay_min} min late"),
+            "success":           True,
+            "source":            "RapidAPI",
+            "train_no":          train_no,
+            "train_name":        str(train_name).title() if train_name else "",
+            "current_station":   str(current_stn).title() if current_stn else "",
+            "delay_minutes":     delay_min,
+            "status":            status_str,
+            "progress_percent":  progress,
             "stations_timeline": stations_timeline,
-            "fetched_at": datetime.now().isoformat(),
-            "from_cache": False,
+            "fetched_at":        datetime.now().isoformat(),
+            "from_cache":        False,
         }
     except Exception as e:
         logger.info(f"[NTES] RapidAPI parse error: {e}")
