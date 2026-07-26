@@ -7,7 +7,8 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.111+-green?logo=fastapi)](https://fastapi.tiangolo.com)
 [![LangChain](https://img.shields.io/badge/LangChain-0.2+-orange)](https://langchain.com)
 [![ChromaDB](https://img.shields.io/badge/ChromaDB-Vector_DB-purple)](https://www.trychroma.com)
-[![Gemini](https://img.shields.io/badge/Gemini-Embedding_001-blue?logo=google)](https://aistudio.google.com)
+[![Gemini](https://img.shields.io/badge/Gemini-3.1_Flash_Lite-blue?logo=google)](https://aistudio.google.com)
+[![Render](https://img.shields.io/badge/Deployed-Render.com-46E3B7?logo=render)](https://railway-rag.onrender.com)
 
 ---
 
@@ -37,11 +38,14 @@ User Question
       │                 ├── Keyword Search ($contains)
       │                 └── Metadata Lookup (train_no, station_code)
       │
-      ├─── LIVE ────► NTES API (real-time running status)
+      ├─── LIVE ────► Live Train Status (tiered by environment)
+      │                 ├── Local:  NTES Direct (enquiry.indianrail.gov.in)
+      │                 ├── Cloud:  RapidAPI (irctc-indian-railway-pnr-status)
+      │                 └── Fallback: erail.in (schedule data)
       │
       ├─── PNR ─────► PNR Status API
       │
-      └─── HYBRID ──► Both ChromaDB + NTES API combined
+      └─── HYBRID ──► Both ChromaDB + Live APIs combined
                            │
                            ▼
                     Context → Gemini 3.1 Flash-lite
@@ -67,6 +71,32 @@ User Question
 | **Multi-modal Uploads** | Upload ticket images/PDFs — Gemini Vision extracts and answers questions |
 | **LLM Flexibility** | Gemini 3.1 Flash-lite (cloud) **or** LM Studio local model (fully offline) |
 
+### 🚦 Live Train Data (Smart Provider Selection)
+| Environment | Primary Source | Fallback |
+|---|---|---|
+| **Local (your PC)** | NTES Direct (indianrail.gov.in) — no API key needed | erail.in |
+| **Cloud (Render)** | RapidAPI Indian Railways — RAPIDAPI_KEY required | erail.in |
+
+> **Why two sources?** NTES blocks cloud server IPs (Render/Singapore IP ranges are flagged). RapidAPI provides reliable live data from cloud. Locally, NTES works perfectly on residential IPs.
+
+Live output example:
+```
+=== LIVE TRAIN STATUS (Source: RapidAPI | Fetched: 2026-07-26T23:31 IST) ===
+Train: 12622 - Tamil Nadu Express
+Current Location: Kosi Kalan
+Journey Progress: 12% of route completed
+Position Detail: Departed from Kosi Kalan at 22:24 26-Jul
+Delay: 6 MINUTES LATE
+
+Recently Passed Stations (last 3):
+  [PASSED] New Delhi | Departed: 21:05 | On Time
+  [PASSED] Kosi Kalan | Departed: 22:24 | 6 min late
+
+Upcoming Stations (next 5):
+  [NEXT] Agra Cantt | Scheduled Arrival: 23:25 | Expected delay: 6 min late
+  [NEXT] Gwalior Jn | Scheduled Arrival: 01:13 | Expected delay: 6 min late
+```
+
 ### 🎨 Frontend
 | Feature | Description |
 |---|---|
@@ -89,10 +119,12 @@ User Question
 | **RAG Framework** | LangChain (LCEL) |
 | **LLM** | Google Gemini 3.1 Flash-lite / LM Studio (local) |
 | **Vector DB** | ChromaDB (persistent, 5 collections) |
-| **Embeddings** | `gemini-embedding-001` (3072-dim, cloud) — high quality semantic search |
-| **Live Data** | NTES API (train status) + PNR API |
+| **Embeddings** | `gemini-embedding-001` (3072-dim, cloud) |
+| **Live Data (Local)** | NTES API — enquiry.indianrail.gov.in |
+| **Live Data (Cloud)** | RapidAPI — irctc-indian-railway-pnr-status.p.rapidapi.com |
+| **PNR Data** | erail.in + RailYatri scrapers |
 | **Frontend** | Vanilla HTML5, CSS3, JavaScript — no framework |
-| **Deployment** | Docker + docker-compose / Render.com / Railway.app |
+| **Deployment** | Render.com (render.yaml configured) |
 
 ---
 
@@ -106,17 +138,14 @@ Railway RAG Assistant/
 │   ├── intent.py            # Intent classifier (STATIC/LIVE/HYBRID/PNR)
 │   ├── logger.py            # Structured logging setup
 │   ├── main.py              # FastAPI app — REST + SSE streaming endpoints
-│   ├── ntes_client.py       # NTES API client for live train running status
+│   ├── ntes_client.py       # Live train status — NTES (local) + RapidAPI (cloud) + erail.in
 │   ├── pnr_client.py        # PNR API client for live booking status
 │   ├── rag.py               # RAG chain — system prompt + LLM switching
 │   └── retriever.py         # Hybrid retriever — vector + keyword + metadata + fuzzy
 ├── scripts/
 │   ├── create_embeddings.py  # Build ChromaDB — all collections (rules/trains/stations)
 │   ├── embed_routes.py       # Dedicated: train_routes collection (compact stop_codes)
-│   ├── embed_schedules.py    # Future: per-stop schedule docs (~232k docs)
-│   ├── embed_coaches.py      # Future: coach composition per train (~12k docs)
 │   ├── embed_local.py        # Future: Mumbai Metro/Local schedules (~26k docs)
-│   ├── embed_platform.py     # Future: platform direction info (~114 docs)
 │   ├── preprocess.py         # CSV → LangChain Documents with station linking
 │   └── test_keys.py          # Gemini API key quota diagnostic tool
 ├── web/
@@ -128,12 +157,12 @@ Railway RAG Assistant/
 │       └── railway-network.svg
 ├── data/
 │   └── railway_rules.csv     # 183 curated railway rules and regulations
-├── Dockerfile                # Container image for deployment
-├── docker-compose.yml        # Compose config with volume mounts
+├── render.yaml               # Render.com deployment config (auto-deploy)
+├── build.sh                  # Build script for Render
 ├── .env.example              # Template for environment variables
 ├── .gitignore
 ├── requirements.txt
-└── Readme.md
+└── README.md
 ```
 
 ---
@@ -200,6 +229,9 @@ LLM_PROVIDER=gemini
 GEMINI_MODEL=gemini-3.1-flash-lite
 USE_LOCAL_EMBEDDINGS=false               # Uses Gemini cloud embeddings
 DATA_COLLECTIONS_DIR=path/to/your/csv_files
+
+# Optional — only needed for cloud deployments (NTES is blocked on cloud IPs)
+# RAPIDAPI_KEY=your-rapidapi-key         # Get free at rapidapi.com
 ```
 
 > **Multiple API Keys:** Add `GOOGLE_API_KEY_1`, `GOOGLE_API_KEY_2`, ... for automatic key rotation when daily quota (1000 req/day) is exhausted.
@@ -234,40 +266,37 @@ API Docs available at: **http://127.0.0.1:8000/docs**
 
 ---
 
-## 🐳 Docker (Recommended)
+## ☁️ Cloud Deployment (Render.com)
 
-```bash
-# 1. Build and start
-docker compose up --build
+This project includes a `render.yaml` — Render auto-detects and configures everything.
 
-# 2. Open browser
-# http://localhost:8000/web/index.html
+### Steps
+
+1. Go to [render.com](https://render.com) → **New Web Service** → Connect GitHub → `Railway_Rag`
+2. Render reads `render.yaml` automatically — no manual config needed
+3. In **Environment** tab, set these secrets:
+
+| Key | Value | Required |
+|-----|-------|----------|
+| `GOOGLE_API_KEY` | Your Gemini API key from [aistudio.google.com](https://aistudio.google.com) | ✅ Required |
+| `RAPIDAPI_KEY` | Your key from [rapidapi.com](https://rapidapi.com) → subscribe to **IRCTC Indian Railway PNR Status** (free tier) | ⭐ For live train data |
+
+4. Deploy → get `https://railway-rag.onrender.com`
+
+### Why RapidAPI is needed on Render
+
+Render's Singapore server IPs are blocked by NTES (enquiry.indianrail.gov.in). The code auto-detects cloud environment and routes live train queries to RapidAPI instead. Without `RAPIDAPI_KEY`, it falls back to erail.in (schedule data only, no live GPS position).
+
+### render.yaml config summary
+```yaml
+startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1 --timeout-keep-alive 75
+envVars:
+  - GOOGLE_API_KEY       # Set manually in dashboard
+  - RAPIDAPI_KEY         # Set manually in dashboard (optional but recommended)
+  - PYTHONDONTWRITEBYTECODE: 1
+  - MALLOC_ARENA_MAX: 2  # Reduces glibc memory arena overhead (~30-50MB saved)
+  - HF_HUB_OFFLINE: 1   # Blocks HuggingFace downloads
 ```
-
-> **Note:** Add `GOOGLE_API_KEY=your_key` inside `docker-compose.yml` under `environment`, or create a `.env` file — Docker Compose will pick it up automatically.
-
----
-
-## ☁️ Cloud Deployment
-
-Your app serves **both backend API and frontend** from the same server — no separate hosting needed.
-
-### Option A — Render.com (Free, Easiest)
-
-1. Go to [render.com](https://render.com) → New Web Service → Connect GitHub → `Railway_Rag`
-2. **Build Command:** `pip install -r requirements.txt`
-3. **Start Command:** `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
-4. **Add Environment Variable:** `GOOGLE_API_KEY=your_key`
-5. **Add Disk** → Mount at `/opt/render/project/src/chroma_db` (for ChromaDB persistence)
-6. Deploy → get `https://your-app.onrender.com`
-
-### Option B — Railway.app (Docker auto-detected)
-
-1. Go to [railway.app](https://railway.app) → New Project → Deploy from GitHub
-2. Railway auto-detects the `Dockerfile` and builds it
-3. Add variable: `GOOGLE_API_KEY=your_key`
-4. Add a Volume → mount to `/app/chroma_db`
-5. Deploy → get `https://your-app.up.railway.app`
 
 ---
 
@@ -278,7 +307,7 @@ Your app serves **both backend API and frontend** from the same server — no se
 | `GET` | `/` | Root redirect |
 | `GET` | `/health` | System health, LLM info, collection stats |
 | `POST` | `/ask` | Standard RAG query (non-streaming) |
-| `POST` | `/ask/stream` | SSE streaming query |
+| `POST` | `/ask/smart` | SSE streaming query |
 | `POST` | `/ask/upload` | Multi-modal query with image/PDF |
 | `GET` | `/trains` | List trains (paginated) |
 | `GET` | `/stations` | List stations (paginated) |
@@ -291,15 +320,15 @@ Your app serves **both backend API and frontend** from the same server — no se
 ## 💬 Example Queries
 
 ```bash
-# Which trains go from Mumbai to Delhi?
-curl -X POST http://localhost:8000/ask \
-  -H "Content-Type: application/json" \
-  -d '{"question": "Which trains run from LTT to NDLS?"}'
-
 # Live running status
 curl -X POST http://localhost:8000/ask \
   -H "Content-Type: application/json" \
-  -d '{"question": "What is the running status of train 12728?"}'
+  -d '{"question": "where is 12622 train now?"}'
+
+# Trains between stations
+curl -X POST http://localhost:8000/ask \
+  -H "Content-Type: application/json" \
+  -d '{"question": "Which trains run from LTT to NDLS?"}'
 
 # PNR check
 curl -X POST http://localhost:8000/ask \
@@ -319,17 +348,54 @@ curl -X POST http://localhost:8000/ask \
 
 ---
 
-## ⚙️ Configuration
+## ⚙️ Configuration Reference
 
 | Variable | Default | Description |
 |---|---|---|
 | `GOOGLE_API_KEY` | — | Primary Gemini API key from [aistudio.google.com](https://aistudio.google.com) |
 | `GOOGLE_API_KEY_1` … `_N` | — | Additional keys for embedding rotation (optional) |
+| `RAPIDAPI_KEY` | — | RapidAPI key for live train data on cloud (subscribe to IRCTC Indian Railway PNR Status — free tier at [rapidapi.com](https://rapidapi.com)) |
 | `LLM_PROVIDER` | `gemini` | `gemini` or `lmstudio` (offline) |
 | `GEMINI_MODEL` | `gemini-3.1-flash-lite` | Gemini model name |
 | `USE_LOCAL_EMBEDDINGS` | `false` | `true` = offline sentence-transformers, `false` = Gemini cloud |
 | `DATA_COLLECTIONS_DIR` | — | Path to CSV data files directory |
 | `LOCAL_API_BASE` | `http://localhost:1234/v1` | LM Studio server URL |
+| `HF_HUB_OFFLINE` | `0` | Set to `1` to block all HuggingFace network calls |
+| `MALLOC_ARENA_MAX` | — | Set to `2` on Linux to reduce glibc memory usage (recommended for Render free tier) |
+
+---
+
+## 🔍 How Live Train Data Works
+
+```
+Query: "where is 12622 now?"
+         │
+         ▼
+    Cloud detected? (PORT env var set by Render)
+         │
+    YES  │  NO (local dev)
+         │       │
+         ▼       ▼
+    RapidAPI   NTES Direct
+    HTTP 200   (Fast, no API key)
+         │       │
+         └───────┘
+               │
+         Parse response:
+         - current_station
+         - delay_minutes (from most recent departed stop)
+         - progress_percent
+         - Last 3 passed stations + next 5 upcoming
+               │
+               ▼
+         Format for LLM → Gemini generates response
+```
+
+**Timeout strategy:**
+- RapidAPI/erail.in: `(8s connect, 15s read)` — fails fast if slow
+- NTES: `(5s connect, 10s read)` — tight because it either works instantly or is blocked
+
+**5-minute cache:** Same train queried twice within 5 min returns cached data (saves API quota).
 
 ---
 
@@ -339,4 +405,5 @@ This project is for **educational and portfolio purposes**.
 
 ---
 
-> Built with ❤️ using FastAPI, LangChain, ChromaDB, and Google Gemini.
+> Built with ❤️ using FastAPI, LangChain, ChromaDB, Google Gemini, and RapidAPI Indian Railways.
+> Live at: **https://railway-rag.onrender.com**
