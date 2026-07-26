@@ -14,11 +14,11 @@ services:
       - key: GEMINI_MODEL
         value: gemini-3.1-flash-lite
       - key: USE_LOCAL_EMBEDDINGS
-        value: "true"         # Matches 384-dim ChromaDB vector database
+        value: "false"        # Gemini cloud embeddings (3072-dim) — no local model loaded
       - key: HF_HUB_OFFLINE
-        value: "0"             # Allow model loading for 384-dim embeddings
+        value: "1"             # Block HuggingFace downloads — no local models needed
       - key: TRANSFORMERS_OFFLINE
-        value: "0"             # Allow model loading for 384-dim embeddings
+        value: "1"             # Block transformers model downloads
       - key: PYTHONUNBUFFERED
         value: "1"             # Force logs to flush immediately
       - key: PYTHONDONTWRITEBYTECODE

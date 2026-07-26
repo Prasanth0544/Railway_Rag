@@ -27,8 +27,9 @@ pydantic-settings               # Config validation (app/config.py)
 google-genai                    # New unified Gemini SDK (replaces deprecated google-generativeai)
 Pillow                          # Image processing for multi-modal uploads (PNG/JPG/WEBP)
 
-# ── Offline/Local Embeddings (matches 384-dim ChromaDB vector database) ────
-sentence-transformers==3.4.1
+# ── Local Embeddings (DISABLED on Render — saves ~700MB disk + ~400MB RAM) ────
+# sentence-transformers==3.4.1   # ← Only needed if USE_LOCAL_EMBEDDINGS=true (local dev)
+#                                  Install manually: pip install sentence-transformers
 
 # ── Streamlit UI (local dev only) ────────────────────────────────────────────
 # streamlit              # ← DISABLED on Render (saves ~150MB RAM).
