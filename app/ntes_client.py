@@ -673,56 +673,84 @@ def _parse_delay(value) -> int:
 
 def format_live_status_for_llm(status: dict) -> str:
     """
-    Format NTES status dict into a readable string for the LLM context.
-    This is injected into the Gemini prompt as live data context.
+    Format live train status into a rich, readable string for the LLM context.
+    Injected into the Gemini prompt as live data — must be clear and structured.
     """
     if not status.get("success"):
         hint = ""
         if "RAPIDAPI_KEY" in status.get("error", ""):
             hint = "\nTip: Ask the admin to set RAPIDAPI_KEY in Render environment variables."
         return (
-            f"⚠️ LIVE DATA UNAVAILABLE for train {status.get('train_no', '?')}\n"
+            f"LIVE DATA UNAVAILABLE for train {status.get('train_no', '?')}\n"
             f"Reason: {status.get('error', 'Unknown error')}{hint}\n"
             f"Please use the scheduled timetable data below (labeled STATIC)."
         )
 
+    train_no    = status.get("train_no", "?")
+    train_name  = status.get("train_name", "").strip()
+    source      = status.get("source", "NTES")
+    fetched     = status.get("fetched_at", "")[:16]
     current_stn = status.get("current_station", "").strip()
-    has_live_tracking = bool(current_stn and current_stn not in ("Station Info Loaded", ""))
+    delay       = status.get("delay_minutes", 0)
+    position    = status.get("status", "")
+    progress    = status.get("progress_percent", 0)
+
+    has_live = bool(current_stn and current_stn not in ("", "Station Info Loaded"))
 
     lines = [
-        f"=== LIVE DATA (Source: {status.get('source', 'NTES')} | "
-        f"Fetched: {status.get('fetched_at', '')[:16]} IST) ===",
+        f"=== LIVE TRAIN STATUS (Source: {source} | Fetched: {fetched} IST) ===",
     ]
     if status.get("from_cache"):
-        lines[0] += f" [Cached — {status.get('cache_age_seconds', '?')}s ago]"
+        lines[0] += f" [Cached - {status.get('cache_age_seconds', '?')}s ago]"
 
-    if status.get("train_name"):
-        lines.append(f"Train: {status['train_no']} — {status['train_name']}")
-    else:
-        lines.append(f"Train: {status['train_no']}")
+    # Train identity
+    name_str = f"{train_no} - {train_name}" if train_name else train_no
+    lines.append(f"Train: {name_str}")
 
-    if has_live_tracking:
+    # Current position + delay
+    if has_live:
         lines.append(f"Current Location: {current_stn}")
-        delay = status.get("delay_minutes", 0)
+        if progress:
+            lines.append(f"Journey Progress: {progress}% of route completed")
+        if position and position not in (current_stn,):
+            lines.append(f"Position Detail: {position}")
         if delay == 0:
-            lines.append("Running Status: ON TIME ✅")
+            lines.append("Delay: ON TIME")
         else:
-            lines.append(f"Running Status: {delay} MINUTES LATE ⚠️")
+            lines.append(f"Delay: {delay} MINUTES LATE")
     else:
-        lines.append("Running Status: ⚠️ REAL-TIME GPS/LOCATION DATA UNAVAILABLE FOR THIS TRAIN")
-        lines.append("Note: Public APIs returned schedule info only; live GPS tracking was not reported.")
+        lines.append("Running Status: REAL-TIME LOCATION UNAVAILABLE")
+        lines.append("Note: Only schedule data returned - no live GPS tracking.")
 
-    if status.get("status"):
-        lines.append(f"Status Detail: {status['status']}")
+    # Station-by-station timeline
+    stations = status.get("stations_timeline", [])
+    if stations:
+        departed = [s for s in stations if s.get("status") == "departed"]
+        upcoming = [s for s in stations if s.get("status") in ("upcoming", "current", "")]
 
-    if status.get("stations_timeline"):
-        lines.append("\nLive Station-wise Platforms, Delays and Schedule Info:")
-        for stn in status["stations_timeline"]:
-            lines.append(
-                f"  - {stn['name']} ({stn['code']}): {stn['platform']} | "
-                f"Scheduled: {stn['scheduled_time']} | Expected/Actual: {stn['actual_time']} | "
-                f"Delay: {stn['delay']}"
-            )
+        # Last 3 departed stations
+        if departed:
+            lines.append("\nRecently Passed Stations (last 3):")
+            for stn in departed[-3:]:
+                name  = stn.get("name", "?")
+                dep   = stn.get("actual_time", "") or stn.get("scheduled_time", "")
+                dly   = stn.get("delay", "On Time")
+                pf    = stn.get("platform", "")
+                pf_str = f" | Platform {pf}" if pf else ""
+                lines.append(f"  [PASSED] {name}{pf_str} | Departed: {dep} | {dly}")
+
+        # Next 5 upcoming stations
+        if upcoming:
+            lines.append("\nUpcoming Stations (next 5):")
+            for stn in upcoming[:5]:
+                name  = stn.get("name", "?")
+                arr   = stn.get("scheduled_time", "")
+                dly   = stn.get("delay", "")
+                pf    = stn.get("platform", "")
+                pf_str  = f" | Platform {pf}" if pf else ""
+                dly_str = f" | Expected delay: {dly}" if dly and dly != "On Time" else " | On time"
+                lines.append(f"  [NEXT] {name}{pf_str} | Scheduled Arrival: {arr}{dly_str}")
 
     lines.append("=" * 50)
     return "\n".join(lines)
+
