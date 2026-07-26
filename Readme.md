@@ -3,11 +3,11 @@
 > **AI-Powered Indian Railways Information System**
 > Hybrid RAG · FastAPI · LangChain · ChromaDB · Google Gemini · Live APIs
 
-[![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python)](https://python.org)
+[![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.111+-green?logo=fastapi)](https://fastapi.tiangolo.com)
 [![LangChain](https://img.shields.io/badge/LangChain-0.2+-orange)](https://langchain.com)
 [![ChromaDB](https://img.shields.io/badge/ChromaDB-Vector_DB-purple)](https://www.trychroma.com)
-[![Gemini](https://img.shields.io/badge/Gemini-2.5_Flash-blue?logo=google)](https://aistudio.google.com)
+[![Gemini](https://img.shields.io/badge/Gemini-Embedding_001-blue?logo=google)](https://aistudio.google.com)
 
 ---
 
@@ -16,10 +16,11 @@
 A **production-ready Hybrid RAG (Retrieval-Augmented Generation)** assistant for Indian Railways. Ask any question in plain English — train schedules, live running status, PNR status, cancellation rules, luggage policies, station info — and get grounded, accurate answers.
 
 **No model training required.** Intelligence comes from:
-- **33,200+ indexed railway documents** stored in ChromaDB
+- **35,383+ indexed railway documents** stored in ChromaDB (5 collections)
 - **Multi-strategy hybrid retrieval** (vector + keyword + metadata)
 - **Live APIs** for real-time train status and PNR
-- **Gemini 2.5 Flash** for natural language generation
+- **Gemini 3.1 Flash-lite** for natural language generation
+- **3072-dimensional Gemini embeddings** (`gemini-embedding-001`)
 
 ---
 
@@ -32,7 +33,7 @@ User Question
  Intent Classifier (STATIC / LIVE / HYBRID / PNR)
       │
       ├─── STATIC ──► ChromaDB Hybrid Retriever
-      │                 ├── Vector Search (semantic)
+      │                 ├── Vector Search (semantic, 3072-dim Gemini embeddings)
       │                 ├── Keyword Search ($contains)
       │                 └── Metadata Lookup (train_no, station_code)
       │
@@ -43,7 +44,7 @@ User Question
       └─── HYBRID ──► Both ChromaDB + NTES API combined
                            │
                            ▼
-                    Context → Gemini 2.5 Flash
+                    Context → Gemini 3.1 Flash-lite
                            │
                            ▼
                    SSE Streaming Response
@@ -64,7 +65,7 @@ User Question
 | **Multi-turn Memory** | Keeps last 5 Q&A pairs per session for contextual follow-up questions |
 | **PNR Support** | Detects 10-digit PNR in query and fetches live booking + passenger status |
 | **Multi-modal Uploads** | Upload ticket images/PDFs — Gemini Vision extracts and answers questions |
-| **LLM Flexibility** | Gemini 2.5 Flash (cloud) **or** LM Studio local model (fully offline) |
+| **LLM Flexibility** | Gemini 3.1 Flash-lite (cloud) **or** LM Studio local model (fully offline) |
 
 ### 🎨 Frontend
 | Feature | Description |
@@ -84,11 +85,11 @@ User Question
 
 | Layer | Technology |
 |---|---|
-| **Backend** | Python 3.11, FastAPI, Uvicorn |
+| **Backend** | Python 3.10, FastAPI, Uvicorn |
 | **RAG Framework** | LangChain (LCEL) |
-| **LLM** | Google Gemini 2.5 Flash / LM Studio (local) |
+| **LLM** | Google Gemini 3.1 Flash-lite / LM Studio (local) |
 | **Vector DB** | ChromaDB (persistent, 5 collections) |
-| **Embeddings** | `sentence-transformers/all-MiniLM-L6-v2` (offline) |
+| **Embeddings** | `gemini-embedding-001` (3072-dim, cloud) — high quality semantic search |
 | **Live Data** | NTES API (train status) + PNR API |
 | **Frontend** | Vanilla HTML5, CSS3, JavaScript — no framework |
 | **Deployment** | Docker + docker-compose / Render.com / Railway.app |
@@ -101,30 +102,35 @@ User Question
 Railway RAG Assistant/
 ├── app/
 │   ├── __init__.py
-│   ├── config.py           # Pydantic settings — env vars with validation
-│   ├── intent.py           # Intent classifier (STATIC/LIVE/HYBRID/PNR)
-│   ├── logger.py           # Structured logging setup
-│   ├── main.py             # FastAPI app — REST + SSE streaming endpoints
-│   ├── ntes_client.py      # NTES API client for live train running status
-│   ├── pnr_client.py       # PNR API client for live booking status
-│   ├── rag.py              # RAG chain — system prompt + LLM switching
-│   └── retriever.py        # Hybrid retriever — vector + keyword + metadata + fuzzy
+│   ├── config.py            # Pydantic settings — env vars with validation
+│   ├── intent.py            # Intent classifier (STATIC/LIVE/HYBRID/PNR)
+│   ├── logger.py            # Structured logging setup
+│   ├── main.py              # FastAPI app — REST + SSE streaming endpoints
+│   ├── ntes_client.py       # NTES API client for live train running status
+│   ├── pnr_client.py        # PNR API client for live booking status
+│   ├── rag.py               # RAG chain — system prompt + LLM switching
+│   └── retriever.py         # Hybrid retriever — vector + keyword + metadata + fuzzy
 ├── scripts/
-│   ├── create_embeddings.py # Build ChromaDB from CSV data (run once)
-│   ├── preprocess.py        # CSV → LangChain Documents with station linking
-│   └── test_bza_hyd.py      # Test script for BZA–HYD route retrieval
+│   ├── create_embeddings.py  # Build ChromaDB — all collections (rules/trains/stations)
+│   ├── embed_routes.py       # Dedicated: train_routes collection (compact stop_codes)
+│   ├── embed_schedules.py    # Future: per-stop schedule docs (~232k docs)
+│   ├── embed_coaches.py      # Future: coach composition per train (~12k docs)
+│   ├── embed_local.py        # Future: Mumbai Metro/Local schedules (~26k docs)
+│   ├── embed_platform.py     # Future: platform direction info (~114 docs)
+│   ├── preprocess.py         # CSV → LangChain Documents with station linking
+│   └── test_keys.py          # Gemini API key quota diagnostic tool
 ├── web/
-│   ├── index.html           # Main UI with sidebar, chips, chat area
-│   ├── styles.css           # Design system (dark mode, glassmorphism, grid)
-│   ├── app.js               # SSE reader, source chips, markdown renderer
+│   ├── index.html            # Main UI with sidebar, chips, chat area
+│   ├── styles.css            # Design system (dark mode, glassmorphism, grid)
+│   ├── app.js                # SSE reader, source chips, markdown renderer
 │   └── assets/
-│       ├── marked.min.js    # Markdown renderer (local, no CDN)
+│       ├── marked.min.js     # Markdown renderer (local, no CDN)
 │       └── railway-network.svg
 ├── data/
-│   └── railway_rules.csv    # 183 curated railway rules and regulations
-├── Dockerfile               # Container image for deployment
-├── docker-compose.yml       # Compose config with volume mounts
-├── .env.example             # Template for environment variables
+│   └── railway_rules.csv     # 183 curated railway rules and regulations
+├── Dockerfile                # Container image for deployment
+├── docker-compose.yml        # Compose config with volume mounts
+├── .env.example              # Template for environment variables
 ├── .gitignore
 ├── requirements.txt
 └── Readme.md
@@ -132,16 +138,30 @@ Railway RAG Assistant/
 
 ---
 
-## 📊 Knowledge Base
+## 📊 Knowledge Base (v1 — Current)
 
-| Collection | Documents | Content |
+> 5 ChromaDB collections · **35,383 documents** · 3072-dim Gemini embeddings
+
+| Collection | Documents | Source | Content |
+|---|---|---|---|
+| **trains** | 12,813 | `train_info.csv` | Train numbers, names, types, zones, schedules, duration |
+| **stations** | 9,956 | `station_info.csv` + zones + AKA | Station codes, names, alternate names, WiFi, zones |
+| **train_routes** | 12,341 | `train_routes.csv` (stop_codes) | Which trains stop at which stations — compact route docs |
+| **railway_rules** | 183 | `railway_rules.csv` | Booking, cancellation, luggage, penalties, concessions |
+| **references** | 90 | `ticket_classes.csv` + `service_tax.csv` | Ticket classes, service tax tables |
+| **Total** | **35,383** | | |
+
+### 🔮 v2 Roadmap (Future Expansion — +270k docs)
+
+| Collection | Est. Docs | Content |
 |---|---|---|
-| **Trains** | 12,813 | Train numbers, names, types, zones, schedules |
-| **Stations** | 9,956 | Station codes, names, AKA variants, zones |
-| **Train Routes** | 10,158 | Stop-level schedules with running frequency |
-| **Railway Rules** | 183 | Booking, cancellation, luggage, penalties, concessions |
-| **References** | 90 | Ticket classes, service tax tables |
-| **Total** | **33,200** | |
+| `train_schedules` | ~232,489 | Per-stop arrival/departure/platform/halt for every train |
+| `coach_positions` | ~12,444 | Coach layout & reversal stations per train |
+| `local_schedules` | ~25,826 | Mumbai Metro/Local trip schedules |
+| `platform_info` | ~114 | Platform directions at stations |
+| **v2 Total** | **~306,256** | |
+
+> v2 embeddings are scripted and ready — will be enabled after v1 deployment is validated.
 
 ---
 
@@ -175,23 +195,27 @@ cp .env.example .env
 ```
 Edit `.env` and add your values:
 ```env
-GOOGLE_API_KEY=your-gemini-api-key     # Get free at aistudio.google.com
+GOOGLE_API_KEY=your-gemini-api-key       # Get free at aistudio.google.com
 LLM_PROVIDER=gemini
-GEMINI_MODEL=gemini-2.5-flash
-USE_LOCAL_EMBEDDINGS=true
+GEMINI_MODEL=gemini-3.1-flash-lite
+USE_LOCAL_EMBEDDINGS=false               # Uses Gemini cloud embeddings
 DATA_COLLECTIONS_DIR=path/to/your/csv_files
 ```
 
-### 5. Build the Vector Database (one-time, ~5–10 minutes)
+> **Multiple API Keys:** Add `GOOGLE_API_KEY_1`, `GOOGLE_API_KEY_2`, ... for automatic key rotation when daily quota (1000 req/day) is exhausted.
+
+### 5. Build the Vector Database (one-time)
+
 ```powershell
-# Windows
-$env:HF_HUB_OFFLINE="1"; $env:TRANSFORMERS_OFFLINE="1"
-.venv\Scripts\python scripts/create_embeddings.py
+# Step 1: Embed railway_rules, trains, stations, references
+.venv\Scripts\python scripts/create_embeddings.py --skip-routes
+
+# Step 2: Embed train_routes (dedicated script with key rotation)
+.venv\Scripts\python scripts/embed_routes.py
 ```
-```bash
-# macOS / Linux
-HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python scripts/create_embeddings.py
-```
+
+> Embedding uses `gemini-embedding-001` (cloud). With 1 API key: ~4–5 hours for all 35k docs.
+> With 13 keys rotating automatically: completes in one session.
 
 ### 6. Start the Server
 ```powershell
@@ -212,7 +236,6 @@ API Docs available at: **http://127.0.0.1:8000/docs**
 
 ## 🐳 Docker (Recommended)
 
-### Run locally with Docker
 ```bash
 # 1. Build and start
 docker compose up --build
@@ -237,7 +260,6 @@ Your app serves **both backend API and frontend** from the same server — no se
 4. **Add Environment Variable:** `GOOGLE_API_KEY=your_key`
 5. **Add Disk** → Mount at `/opt/render/project/src/chroma_db` (for ChromaDB persistence)
 6. Deploy → get `https://your-app.onrender.com`
-7. Run the ingestion once via Render Shell: `python scripts/create_embeddings.py`
 
 ### Option B — Railway.app (Docker auto-detected)
 
@@ -269,12 +291,12 @@ Your app serves **both backend API and frontend** from the same server — no se
 ## 💬 Example Queries
 
 ```bash
-# Train route
+# Which trains go from Mumbai to Delhi?
 curl -X POST http://localhost:8000/ask \
   -H "Content-Type: application/json" \
-  -d '{"question": "What is the route of train 12727?"}'
+  -d '{"question": "Which trains run from LTT to NDLS?"}'
 
-# Live status
+# Live running status
 curl -X POST http://localhost:8000/ask \
   -H "Content-Type: application/json" \
   -d '{"question": "What is the running status of train 12728?"}'
@@ -284,12 +306,12 @@ curl -X POST http://localhost:8000/ask \
   -H "Content-Type: application/json" \
   -d '{"question": "Check PNR 8101234567"}'
 
-# Cancellation rules
+# Railway rules
 curl -X POST http://localhost:8000/ask \
   -H "Content-Type: application/json" \
   -d '{"question": "What are the cancellation charges for Sleeper class?"}'
 
-# Fuzzy station name
+# Fuzzy station name (handles typos)
 curl -X POST http://localhost:8000/ask \
   -H "Content-Type: application/json" \
   -d '{"question": "What trains stop at Santhamagulur?"}'
@@ -301,13 +323,13 @@ curl -X POST http://localhost:8000/ask \
 
 | Variable | Default | Description |
 |---|---|---|
-| `GOOGLE_API_KEY` | — | Gemini API key from [aistudio.google.com](https://aistudio.google.com) |
+| `GOOGLE_API_KEY` | — | Primary Gemini API key from [aistudio.google.com](https://aistudio.google.com) |
+| `GOOGLE_API_KEY_1` … `_N` | — | Additional keys for embedding rotation (optional) |
 | `LLM_PROVIDER` | `gemini` | `gemini` or `lmstudio` (offline) |
-| `GEMINI_MODEL` | `gemini-2.5-flash` | Gemini model name |
-| `USE_LOCAL_EMBEDDINGS` | `true` | Use offline sentence-transformers |
-| `DATA_COLLECTIONS_DIR` | — | Path to CSV data files |
+| `GEMINI_MODEL` | `gemini-3.1-flash-lite` | Gemini model name |
+| `USE_LOCAL_EMBEDDINGS` | `false` | `true` = offline sentence-transformers, `false` = Gemini cloud |
+| `DATA_COLLECTIONS_DIR` | — | Path to CSV data files directory |
 | `LOCAL_API_BASE` | `http://localhost:1234/v1` | LM Studio server URL |
-| `HF_HUB_OFFLINE` | `1` | Prevent HuggingFace network calls |
 
 ---
 
