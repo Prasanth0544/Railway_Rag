@@ -1,32 +1,36 @@
 """
-ntes_client.py — NTES Live Train Data Client
+ntes_client.py — Live Train Status Client
 
-Fetches live train running status from India's National Train Enquiry System.
-Includes 5-minute in-memory cache per session to avoid hammering the API.
-Gracefully returns error dict if NTES is unavailable (never raises exceptions).
+Priority order on cloud (Render, Heroku, etc.):
+  1. RapidAPI Indian Railways (works from all IPs — cloud-friendly)
+  2. erail.in (lightweight fallback)
+  3. NTES (only attempted locally — blocked on cloud IPs)
 
-Usage:
-    from app.ntes_client import get_train_running_status, format_live_status_for_llm
-    status = get_train_running_status("17225")
+Priority order locally:
+  1. NTES (direct, no API key needed)
+  2. erail.in
+  3. RapidAPI (if key is set)
+
+Set RAPIDAPI_KEY in your .env / Render env vars to unlock cloud live tracking.
 """
 
+import os
 import re
 import requests
 import time
 from datetime import datetime, timedelta
 from typing import Optional
 
-# ── In-memory cache (per server session, 5-min TTL) ──────────────
 from app.logger import get_logger
 logger = get_logger("app.ntes_client")
 
+# ── In-memory cache (per server session, 5-min TTL) ──────────────
 _live_cache: dict[str, dict] = {}
 CACHE_TTL_SECONDS = 300  # 5 minutes
 
 # ── HTTP config ───────────────────────────────────────────────────
-# Connect timeout: 15s (give more time for slow connection handshakes)
-# Read timeout:    25s (wait for complete response body)
-REQUEST_TIMEOUT = (15, 25)  # (connect_timeout, read_timeout) in seconds
+REQUEST_TIMEOUT = (8, 15)   # Reduced: (connect, read) — fail fast on cloud blocks
+NTES_TIMEOUT    = (5, 10)   # Even tighter for NTES (known to block cloud IPs)
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -35,15 +39,35 @@ HEADERS = {
     "Referer": "https://enquiry.indianrail.gov.in/mntes",
 }
 
-# ── Known API endpoints (try in order) ───────────────────────────
+# ── RapidAPI config ───────────────────────────────────────────────
+RAPIDAPI_KEY  = os.getenv("RAPIDAPI_KEY", "")
+RAPIDAPI_HOST = "indian-railway-irctc.p.rapidapi.com"
+RAPIDAPI_BASE = f"https://{RAPIDAPI_HOST}/api/trains/v1/train"
+
+ERAIL_TRAIN_ENDPOINT = "https://erail.in/rail/getTrains.aspx"
+
+# ── NTES endpoints ────────────────────────────────────────────────
 NTES_ENDPOINTS = [
-    # Primary: NTES official
     "https://enquiry.indianrail.gov.in/NTES/GetTrainRunningStatus",
-    # Alternate NTES path
     "https://enquiry.indianrail.gov.in/mntes/GetTrainRunningStatus",
 ]
 
-ERAIL_TRAIN_ENDPOINT = "https://erail.in/rail/getTrains.aspx"
+
+# ─────────────────────────────────────────────────────────────────
+# CLOUD DETECTION
+# ─────────────────────────────────────────────────────────────────
+
+def _is_cloud_deployment() -> bool:
+    """
+    Detect if running on a cloud server (Render, Heroku, Railway, etc.).
+    On cloud servers, NTES is blocked — skip it to save time.
+    """
+    cloud_env_vars = ["RENDER", "HEROKU_APP_NAME", "RAILWAY_ENVIRONMENT",
+                      "FLY_APP_NAME", "PORT"]
+    return any(os.getenv(v) for v in cloud_env_vars)
+
+
+_IS_CLOUD = _is_cloud_deployment()
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -98,13 +122,13 @@ def get_train_running_status(train_no: str) -> dict:
         current_station: str (if available)
         delay_minutes : int
         status        : str ("On time" / "X min late" / "Arrived" / "Cancelled")
-        source        : str ("NTES" / "erail.in" / "cache")
+        source        : str ("RapidAPI" / "NTES" / "erail.in" / "cache")
         fetched_at    : str (ISO timestamp)
         error         : str (only if success=False)
         from_cache    : bool
     """
     train_no = str(train_no).strip()
-    logger.info(f"[NTES] Request for train {train_no}")
+    logger.info(f"[NTES] Request for train {train_no} (cloud={_IS_CLOUD})")
 
     # 1. Cache hit
     cached = _get_from_cache(train_no)
@@ -112,25 +136,38 @@ def get_train_running_status(train_no: str) -> dict:
         logger.info(f"[NTES] Cache hit — age {cached.get('cache_age_seconds', '?')}s")
         return cached
 
-    # 2. Try NTES primary endpoints
-    for endpoint in NTES_ENDPOINTS:
-        result = _fetch_ntes(train_no, endpoint)
+    # 2. RapidAPI — works from cloud servers (primary on cloud, tertiary locally)
+    if RAPIDAPI_KEY:
+        result = _fetch_rapidapi(train_no)
         if result and result.get("success"):
             _set_cache(train_no, result)
             return result
 
-    # 3. Fallback: erail.in
+    # 3. NTES — only try locally (cloud IPs are blocked, wastes 15–25s per attempt)
+    if not _IS_CLOUD:
+        for endpoint in NTES_ENDPOINTS:
+            result = _fetch_ntes(train_no, endpoint)
+            if result and result.get("success"):
+                _set_cache(train_no, result)
+                return result
+    else:
+        logger.info("[NTES] Skipping NTES on cloud deployment (IPs blocked by indianrail.gov.in)")
+
+    # 4. Fallback: erail.in (lightweight, usually works)
     result = _fetch_erail(train_no)
     if result and result.get("success"):
         _set_cache(train_no, result)
         return result
 
-    # 4. All sources failed
+    # 5. All sources failed
+    no_rapidapi_hint = ""
+    if not RAPIDAPI_KEY:
+        no_rapidapi_hint = " Set RAPIDAPI_KEY in Render env vars for reliable cloud live tracking."
     logger.info(f"[NTES] All sources failed for train {train_no}")
     return {
         "success": False,
         "train_no": train_no,
-        "error": "Live data unavailable — NTES and backup sources not responding.",
+        "error": f"Live data unavailable — all sources failed or timed out.{no_rapidapi_hint}",
         "fetched_at": datetime.now().isoformat(),
         "from_cache": False,
     }
@@ -144,36 +181,69 @@ def get_station_live_board(station_code: str, board_type: str = "ARR") -> dict:
     station_code = station_code.upper().strip()
     cache_key = f"station_{station_code}_{board_type}"
 
-    # Use same cache mechanism
     if cache_key in _live_cache and datetime.now() < _live_cache[cache_key]["expires_at"]:
         return {**_live_cache[cache_key]["data"], "from_cache": True}
 
-    try:
-        resp = requests.get(
-            "https://enquiry.indianrail.gov.in/NTES/GetArrivalDeparture",
-            params={"stnCode": station_code, "type": board_type},
-            headers=HEADERS,
-            timeout=REQUEST_TIMEOUT,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            result = {
-                "success": True,
-                "station_code": station_code,
-                "board_type": board_type,
-                "trains": data if isinstance(data, list) else data.get("trains", []),
-                "source": "NTES",
-                "fetched_at": datetime.now().isoformat(),
-                "from_cache": False,
-            }
-            _live_cache[cache_key] = {
-                "data": result,
-                "fetched_at": datetime.now(),
-                "expires_at": datetime.now() + timedelta(seconds=CACHE_TTL_SECONDS),
-            }
-            return result
-    except Exception as e:
-        logger.info(f"[NTES] Station board failed for {station_code}: {e}")
+    # Try RapidAPI station board first
+    if RAPIDAPI_KEY:
+        try:
+            resp = requests.get(
+                f"{RAPIDAPI_BASE}/liveAt/{station_code}",
+                headers={
+                    "x-rapidapi-key": RAPIDAPI_KEY,
+                    "x-rapidapi-host": RAPIDAPI_HOST,
+                },
+                timeout=REQUEST_TIMEOUT,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                trains = data.get("body", data) if isinstance(data, dict) else data
+                result = {
+                    "success": True,
+                    "station_code": station_code,
+                    "board_type": board_type,
+                    "trains": trains if isinstance(trains, list) else [],
+                    "source": "RapidAPI",
+                    "fetched_at": datetime.now().isoformat(),
+                    "from_cache": False,
+                }
+                _live_cache[cache_key] = {
+                    "data": result,
+                    "fetched_at": datetime.now(),
+                    "expires_at": datetime.now() + timedelta(seconds=CACHE_TTL_SECONDS),
+                }
+                return result
+        except Exception as e:
+            logger.info(f"[NTES] RapidAPI station board failed for {station_code}: {e}")
+
+    # Fallback: NTES station board (local only)
+    if not _IS_CLOUD:
+        try:
+            resp = requests.get(
+                "https://enquiry.indianrail.gov.in/NTES/GetArrivalDeparture",
+                params={"stnCode": station_code, "type": board_type},
+                headers=HEADERS,
+                timeout=NTES_TIMEOUT,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                result = {
+                    "success": True,
+                    "station_code": station_code,
+                    "board_type": board_type,
+                    "trains": data if isinstance(data, list) else data.get("trains", []),
+                    "source": "NTES",
+                    "fetched_at": datetime.now().isoformat(),
+                    "from_cache": False,
+                }
+                _live_cache[cache_key] = {
+                    "data": result,
+                    "fetched_at": datetime.now(),
+                    "expires_at": datetime.now() + timedelta(seconds=CACHE_TTL_SECONDS),
+                }
+                return result
+        except Exception as e:
+            logger.info(f"[NTES] Station board failed for {station_code}: {e}")
 
     return {
         "success": False,
@@ -188,20 +258,132 @@ def get_station_live_board(station_code: str, board_type: str = "ARR") -> dict:
 # FETCH IMPLEMENTATIONS
 # ─────────────────────────────────────────────────────────────────
 
+def _fetch_rapidapi(train_no: str) -> Optional[dict]:
+    """
+    Fetch live running status from RapidAPI Indian Railways.
+    Endpoint: GET /api/trains/v1/train/status?train_number=XXXXX&departure_date=YYYYMMDD
+    Works from cloud server IPs (Render, Heroku, etc.).
+    """
+    if not RAPIDAPI_KEY:
+        return None
+
+    today = datetime.now().strftime("%Y%m%d")
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
+
+    for date_str in [today, yesterday]:
+        try:
+            resp = requests.get(
+                f"{RAPIDAPI_BASE}/status",
+                params={"train_number": train_no, "departure_date": date_str},
+                headers={
+                    "x-rapidapi-key": RAPIDAPI_KEY,
+                    "x-rapidapi-host": RAPIDAPI_HOST,
+                },
+                timeout=REQUEST_TIMEOUT,
+            )
+            logger.info(f"[NTES] RapidAPI → HTTP {resp.status_code} (date={date_str})")
+
+            if resp.status_code == 200:
+                data = resp.json()
+                body = data.get("body", data)
+
+                # Skip empty or error responses
+                if not body or (isinstance(body, dict) and body.get("error")):
+                    continue
+
+                return _parse_rapidapi_response(train_no, body)
+
+            elif resp.status_code in (404, 400):
+                # Try yesterday's date
+                continue
+            else:
+                logger.info(f"[NTES] RapidAPI unexpected status {resp.status_code}")
+                break
+
+        except Exception as e:
+            logger.info(f"[NTES] RapidAPI error: {e}")
+            break
+
+    return None
+
+
+def _parse_rapidapi_response(train_no: str, body: dict) -> Optional[dict]:
+    """Parse RapidAPI Indian Railways live status response."""
+    try:
+        if isinstance(body, list) and body:
+            body = body[0]
+        if not isinstance(body, dict):
+            return None
+
+        train_name = (
+            body.get("train_name") or body.get("TrainName") or
+            body.get("name") or ""
+        )
+        current_stn = (
+            body.get("current_station_name") or body.get("currentStation") or
+            body.get("station_name") or body.get("curr_station") or ""
+        )
+        delay_raw = (
+            body.get("delay") or body.get("lateBy") or
+            body.get("DelayedBy") or body.get("delay_minutes") or 0
+        )
+        status_raw = (
+            body.get("status") or body.get("running_status") or
+            body.get("Status") or ""
+        )
+
+        # Extract delay from status string if numeric field is 0 but status mentions delay
+        delay_min = _parse_delay(delay_raw)
+        if delay_min == 0 and isinstance(status_raw, str):
+            dm = re.search(r"(\d+)\s*min", status_raw, re.IGNORECASE)
+            if dm:
+                delay_min = int(dm.group(1))
+
+        # Build stations timeline from position data if available
+        stations_timeline = []
+        position_data = body.get("position") or body.get("stations") or []
+        if isinstance(position_data, list):
+            for stn in position_data:
+                if not isinstance(stn, dict):
+                    continue
+                stations_timeline.append({
+                    "name": stn.get("station_name", stn.get("name", "")),
+                    "code": stn.get("station_code", stn.get("code", "")),
+                    "platform": stn.get("platform", stn.get("platform_number", "")),
+                    "scheduled_time": stn.get("scheduled_arrival", stn.get("sched_arr", "")),
+                    "actual_time": stn.get("actual_arrival", stn.get("act_arr", "")),
+                    "delay": stn.get("delay", "On Time"),
+                })
+
+        return {
+            "success": True,
+            "source": "RapidAPI",
+            "train_no": train_no,
+            "train_name": str(train_name).title() if train_name else "",
+            "current_station": str(current_stn).title() if current_stn else "",
+            "delay_minutes": delay_min,
+            "status": status_raw or ("On time" if delay_min == 0 else f"{delay_min} min late"),
+            "stations_timeline": stations_timeline,
+            "fetched_at": datetime.now().isoformat(),
+            "from_cache": False,
+        }
+    except Exception as e:
+        logger.info(f"[NTES] RapidAPI parse error: {e}")
+        return None
+
+
 def _fetch_ntes(train_no: str, endpoint: str) -> Optional[dict]:
-    """Fetch from an NTES servlet endpoint using CSRF token post verification."""
+    """Fetch from NTES — local only (cloud IPs are blocked by indianrail.gov.in)."""
     try:
         session = requests.Session()
         session.headers.update(HEADERS)
 
-        # 1. Fetch homepage to initialize cookies
         home_url = "https://enquiry.indianrail.gov.in/mntes/"
-        session.get(home_url, timeout=REQUEST_TIMEOUT)
+        session.get(home_url, timeout=NTES_TIMEOUT)
 
-        # 2. Get CSRF Token
         csrf_url = f"https://enquiry.indianrail.gov.in/mntes/GetCSRFToken?t={int(time.time() * 1000)}"
-        r_csrf = session.get(csrf_url, timeout=REQUEST_TIMEOUT)
-        
+        r_csrf = session.get(csrf_url, timeout=NTES_TIMEOUT)
+
         csrf_data = {}
         if r_csrf.status_code == 200:
             match = re.search(r"name='([^']+)'\s+value='([^']+)'", r_csrf.text)
@@ -210,11 +392,7 @@ def _fetch_ntes(train_no: str, endpoint: str) -> Optional[dict]:
             if match:
                 csrf_data[match.group(1)] = match.group(2)
 
-        # 3. Format current date as journey date (dd-MMM-yyyy)
-        # Note: %b yields 'Jul', 'Aug', etc.
         j_date = datetime.now().strftime("%d-%b-%Y")
-
-        # 4. POST to tr servlet
         tr_url = "https://enquiry.indianrail.gov.in/mntes/tr"
         params = {
             "opt": "TrainRunning",
@@ -226,20 +404,17 @@ def _fetch_ntes(train_no: str, endpoint: str) -> Optional[dict]:
         }
         params.update(csrf_data)
 
-        resp = session.post(tr_url, data=params, timeout=REQUEST_TIMEOUT)
+        resp = session.post(tr_url, data=params, timeout=NTES_TIMEOUT)
         logger.info(f"[NTES] tr POST status: {resp.status_code} | length: {len(resp.text)}")
-        
+
         if resp.status_code == 200 and len(resp.text) > 100:
             result = _parse_ntes_text(train_no, resp.text)
-            # Fallback: if train hasn't started running yet for the server's "today",
-            # query yesterday's date which is likely the currently active run.
             if result and (not result.get("current_station") or result.get("current_station") == "Station Info Loaded"):
                 yesterday = datetime.now() - timedelta(days=1)
                 y_date = yesterday.strftime("%d-%b-%Y")
-                logger.info(f"[NTES] Train not started for today's date ({j_date}). Trying yesterday's date ({y_date})...")
-                
-                # Fetch a fresh CSRF token for the fallback request
-                r_csrf_y = session.get(csrf_url, timeout=REQUEST_TIMEOUT)
+                logger.info(f"[NTES] Trying yesterday's date ({y_date})...")
+
+                r_csrf_y = session.get(csrf_url, timeout=NTES_TIMEOUT)
                 csrf_data_y = {}
                 if r_csrf_y.status_code == 200:
                     match_y = re.search(r"name='([^']+)'\s+value='([^']+)'", r_csrf_y.text)
@@ -247,22 +422,12 @@ def _fetch_ntes(train_no: str, endpoint: str) -> Optional[dict]:
                         match_y = re.search(r'name="([^"]+)"\s+value="([^"]+)"', r_csrf_y.text)
                     if match_y:
                         csrf_data_y[match_y.group(1)] = match_y.group(2)
-                
-                params_y = {
-                    "opt": "TrainRunning",
-                    "subOpt": "fullR",
-                    "trainNo": train_no,
-                    "jDate": y_date,
-                    "date": "0",
-                    "startDay": "0"
-                }
+
+                params_y = {**params, "jDate": y_date}
                 params_y.update(csrf_data_y)
-                
-                resp_y = session.post(tr_url, data=params_y, timeout=REQUEST_TIMEOUT)
-                logger.info(f"[NTES] Yesterday fallback tr POST status: {resp_y.status_code} | length: {len(resp_y.text)}")
+                resp_y = session.post(tr_url, data=params_y, timeout=NTES_TIMEOUT)
                 if resp_y.status_code == 200 and len(resp_y.text) > 100:
                     result_y = _parse_ntes_text(train_no, resp_y.text)
-                    logger.info(f"[NTES] Yesterday fallback parsed: {result_y}")
                     if result_y and result_y.get("current_station") and result_y.get("current_station") != "Station Info Loaded":
                         return result_y
             return result
@@ -297,80 +462,29 @@ def _fetch_erail(train_no: str) -> Optional[dict]:
 # PARSERS
 # ─────────────────────────────────────────────────────────────────
 
-def _parse_ntes_json(train_no: str, data: dict) -> Optional[dict]:
-    """Parse NTES JSON response into standard format."""
-    try:
-        # Handle wrapped responses
-        if isinstance(data, list) and data:
-            data = data[0]
-        if not isinstance(data, dict):
-            return None
-
-        # Extract fields — NTES uses various field names
-        train_name = (
-            data.get("TrainName") or data.get("trainName") or
-            data.get("Train_Name") or data.get("train_name") or ""
-        )
-        current_stn = (
-            data.get("CurrentStation") or data.get("currentStation") or
-            data.get("CurrStation") or data.get("curr_station") or ""
-        )
-        delay_raw = (
-            data.get("DelayedBy") or data.get("lateBy") or
-            data.get("Delay") or data.get("delay") or 0
-        )
-        status_raw = (
-            data.get("Status") or data.get("status") or
-            data.get("TrainStatus") or data.get("trainStatus") or ""
-        )
-
-        delay_min = _parse_delay(delay_raw)
-
-        return {
-            "success": True,
-            "source": "NTES",
-            "train_no": train_no,
-            "train_name": str(train_name).title(),
-            "current_station": str(current_stn).title(),
-            "delay_minutes": delay_min,
-            "status": status_raw or ("On time" if delay_min == 0 else f"{delay_min} min late"),
-            "fetched_at": datetime.now().isoformat(),
-            "from_cache": False,
-        }
-    except Exception as e:
-        logger.info(f"[NTES] JSON parse error: {e}")
-        return None
-
-
 def _parse_ntes_text(train_no: str, text: str) -> Optional[dict]:
     """Parse NTES HTML response using BeautifulSoup to extract live running status."""
     try:
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(text, "html.parser")
-        
-        # Remove script and style elements
+
         for script in soup(["script", "style"]):
             script.extract()
-            
+
         clean_lines = [line.strip() for line in soup.get_text().splitlines() if line.strip()]
         if not clean_lines:
             return None
 
-        # 1. Extract Train Name from first few lines (e.g., "17225 - AMARAVATHI EXP")
         train_name = ""
         for line in clean_lines[:10]:
             if train_no in line and "-" in line:
                 train_name = line.replace(train_no, "").replace("-", "").strip()
                 break
 
-        # 2. Extract Current Position and Delay from text
-        # Look for "Departed from" or "Arrived at" or "Expected arrival at"
-        # E.g. "Departed from MARKAPUR ROAD(MRK) at 23:56 09-Jul (Delay: 00:45)"
         status_phrase = ""
         current_station = ""
         delay_minutes = 0
 
-        # Try to find the exact status line (often line 6 or matching prefix)
         status_prefixes = ("departed from", "arrived at", "expected arrival at", "expected departure at")
         for line in clean_lines:
             line_lower = line.lower()
@@ -378,7 +492,6 @@ def _parse_ntes_text(train_no: str, text: str) -> Optional[dict]:
                 status_phrase = line
                 break
 
-        # Fallback if no prefix matches but we see a line starting with "Departed"
         if not status_phrase:
             for line in clean_lines:
                 if "departed from" in line.lower() or "arrived at" in line.lower():
@@ -386,13 +499,12 @@ def _parse_ntes_text(train_no: str, text: str) -> Optional[dict]:
                     break
 
         if status_phrase:
-            # Parse delay minutes (e.g. "Delay: 00:45" or "Delay: 45 Min" or "Delay: Delay 00:45")
             delay_match = re.search(r"Delay:\s*(\d{2}):(\d{2})", status_phrase, re.IGNORECASE)
             if not delay_match:
                 delay_match = re.search(r"Delay[- ]+Delay\s*(\d{2}):(\d{2})", status_phrase, re.IGNORECASE)
             if not delay_match:
                 delay_match = re.search(r"Delay:\s*(\d+)\s*Min", status_phrase, re.IGNORECASE)
-                
+
             if delay_match:
                 if len(delay_match.groups()) == 2:
                     hours = int(delay_match.group(1))
@@ -402,44 +514,36 @@ def _parse_ntes_text(train_no: str, text: str) -> Optional[dict]:
                     delay_minutes = int(delay_match.group(1))
             elif "on time" in status_phrase.lower() or "right time" in status_phrase.lower():
                 delay_minutes = 0
-            
-            # Extract current station name
-            # E.g. "Departed from MARKAPUR ROAD(MRK) at 23:56" -> "MARKAPUR ROAD"
+
             stn_match = re.search(r"(?:Departed from|Arrived at|Expected arrival at|Expected departure at)\s+([^(]+)", status_phrase, re.IGNORECASE)
             if stn_match:
                 current_station = stn_match.group(1).strip()
         else:
             status_phrase = "Running status parsed successfully."
 
-        # Parse station timeline with platform and delay details
         stations_data = []
         for outer_div in soup.find_all("div", style=lambda s: s and "display:flex" in s):
             pf_span = outer_div.find("span", class_="w3-orange")
             if not pf_span:
                 continue
-                
             left_col = outer_div.find("div", style=lambda s: s and "float:left" in s)
             if not left_col:
                 continue
-                
             b_tag = left_col.find("b")
             if not b_tag:
                 continue
             station_name = b_tag.get_text().strip()
             platform = pf_span.get_text().strip()
-            
             container_div = pf_span.find_parent("div")
             station_code = ""
             if container_div:
                 parts = container_div.get_text().strip().split()
                 if parts:
                     station_code = parts[0]
-                    
             right_col = outer_div.find("div", style=lambda s: s and "float:right" in s)
             scheduled_time = ""
             actual_time = ""
             delay_text = "On Time"
-            
             if right_col:
                 spans = right_col.find_all("span")
                 if len(spans) >= 1:
@@ -452,11 +556,8 @@ def _parse_ntes_text(train_no: str, text: str) -> Optional[dict]:
                         actual_time = actual_text.replace(delay_text, "").strip()
                     else:
                         actual_time = actual_text
-                        if "on time" in actual_text.lower() or "right time" in actual_text.lower():
-                            delay_text = "On Time"
-                        else:
-                            delay_text = "On Time"
-                            
+                        delay_text = "On Time"
+
             stations_data.append({
                 "name": station_name,
                 "code": station_code,
@@ -485,7 +586,6 @@ def _parse_ntes_text(train_no: str, text: str) -> Optional[dict]:
 
 def _parse_erail_response(train_no: str, text: str) -> Optional[dict]:
     """Parse erail.in response — provides schedule info at minimum."""
-    # erail returns pipe/comma separated data — extract what we can
     try:
         lines = text.strip().split("\n")
         if not lines or not lines[0]:
@@ -534,15 +634,17 @@ def format_live_status_for_llm(status: dict) -> str:
     This is injected into the Gemini prompt as live data context.
     """
     if not status.get("success"):
+        hint = ""
+        if "RAPIDAPI_KEY" in status.get("error", ""):
+            hint = "\nTip: Ask the admin to set RAPIDAPI_KEY in Render environment variables."
         return (
             f"⚠️ LIVE DATA UNAVAILABLE for train {status.get('train_no', '?')}\n"
-            f"Reason: {status.get('error', 'Unknown error')}\n"
+            f"Reason: {status.get('error', 'Unknown error')}{hint}\n"
             f"Please use the scheduled timetable data below (labeled STATIC)."
         )
 
-    # Check if we actually have live location/tracking data
     current_stn = status.get("current_station", "").strip()
-    has_live_tracking = bool(current_stn and current_stn != "Station Info Loaded")
+    has_live_tracking = bool(current_stn and current_stn not in ("Station Info Loaded", ""))
 
     lines = [
         f"=== LIVE DATA (Source: {status.get('source', 'NTES')} | "

@@ -25,3 +25,6 @@ services:
         value: "1"             # Skip .pyc file generation — saves disk & RAM
       - key: MALLOC_ARENA_MAX
         value: "2"             # Limit glibc memory arenas on Linux — saves ~30-50MB
+      - key: RAPIDAPI_KEY
+        sync: false            # Optional: set in Render dashboard for reliable live train tracking from cloud IPs
+                               # Get free key at: https://rapidapi.com/search/indian%20railway
