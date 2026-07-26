@@ -21,8 +21,8 @@ except ImportError:
 CACHE_TTL_SECONDS = 600  # 10 minutes
 _pnr_cache: Dict[str, Dict[str, Any]] = {}
 
-# HTTP timeout: 3s connect (fail fast if IP blocked), 20s read (patient for slow servers)
-REQUEST_TIMEOUT = (3, 20)
+# HTTP timeout: 15s connect, 25s read
+REQUEST_TIMEOUT = (15, 25)
 
 # Rotate user-agents to reduce cloud IP detection / rate limiting
 import random

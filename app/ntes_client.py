@@ -24,9 +24,9 @@ _live_cache: dict[str, dict] = {}
 CACHE_TTL_SECONDS = 300  # 5 minutes
 
 # ── HTTP config ───────────────────────────────────────────────────
-# Connect timeout: 3s (fail fast if IP is blocked — Render data-center IPs are blocked by NTES)
-# Read timeout:    20s (wait longer for slow but accessible servers — local/VPS)
-REQUEST_TIMEOUT = (3, 20)  # (connect_timeout, read_timeout) in seconds
+# Connect timeout: 15s (give more time for slow connection handshakes)
+# Read timeout:    25s (wait for complete response body)
+REQUEST_TIMEOUT = (15, 25)  # (connect_timeout, read_timeout) in seconds
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -540,6 +540,10 @@ def format_live_status_for_llm(status: dict) -> str:
             f"Please use the scheduled timetable data below (labeled STATIC)."
         )
 
+    # Check if we actually have live location/tracking data
+    current_stn = status.get("current_station", "").strip()
+    has_live_tracking = bool(current_stn and current_stn != "Station Info Loaded")
+
     lines = [
         f"=== LIVE DATA (Source: {status.get('source', 'NTES')} | "
         f"Fetched: {status.get('fetched_at', '')[:16]} IST) ===",
@@ -552,14 +556,16 @@ def format_live_status_for_llm(status: dict) -> str:
     else:
         lines.append(f"Train: {status['train_no']}")
 
-    if status.get("current_station"):
-        lines.append(f"Current Location: {status['current_station']}")
-
-    delay = status.get("delay_minutes", 0)
-    if delay == 0:
-        lines.append("Running Status: ON TIME ✅")
+    if has_live_tracking:
+        lines.append(f"Current Location: {current_stn}")
+        delay = status.get("delay_minutes", 0)
+        if delay == 0:
+            lines.append("Running Status: ON TIME ✅")
+        else:
+            lines.append(f"Running Status: {delay} MINUTES LATE ⚠️")
     else:
-        lines.append(f"Running Status: {delay} MINUTES LATE ⚠️")
+        lines.append("Running Status: ⚠️ REAL-TIME GPS/LOCATION DATA UNAVAILABLE FOR THIS TRAIN")
+        lines.append("Note: Public APIs returned schedule info only; live GPS tracking was not reported.")
 
     if status.get("status"):
         lines.append(f"Status Detail: {status['status']}")
