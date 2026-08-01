@@ -885,6 +885,7 @@ async def ask_with_file(
         rag_context = ""
         sources = []
         if rag_chain and retrieval_query.strip():
+            from app.rag import format_docs, get_sources
             docs = rag_chain.retriever.retrieve(retrieval_query)
             if docs:
                 rag_context = format_docs(docs)
