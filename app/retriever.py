@@ -142,6 +142,41 @@ def _expand_railway_synonyms(query: str) -> str:
 
 
 # ─────────────────────────────────────────────
+# RECIPROCAL RANK FUSION (RRF)
+# ─────────────────────────────────────────────
+
+def _reciprocal_rank_fusion(
+    ranked_lists: list[list[Document]], k: int = 60
+) -> list[Document]:
+    """
+    Merge multiple ranked document lists using Reciprocal Rank Fusion.
+    Each doc's score = sum(1 / (k + rank)) across all lists it appears in.
+    Docs found by multiple retrieval methods (vector + keyword + exact)
+    get boosted to the top.
+    """
+    scores: dict[str, float] = {}
+    doc_map: dict[str, Document] = {}
+
+    for ranked_list in ranked_lists:
+        for rank, doc in enumerate(ranked_list):
+            doc_id = doc.page_content[:100]  # use content prefix as dedup key
+            scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (k + rank + 1)
+            # Keep the doc with the highest individual relevance_score
+            existing = doc_map.get(doc_id)
+            if existing is None or doc.metadata.get("relevance_score", 0) > existing.metadata.get("relevance_score", 0):
+                doc_map[doc_id] = doc
+
+    sorted_ids = sorted(scores, key=lambda x: scores[x], reverse=True)
+    result = []
+    for doc_id in sorted_ids:
+        doc = doc_map[doc_id]
+        # Inject the RRF score into metadata for transparency
+        doc.metadata["rrf_score"] = round(scores[doc_id], 6)
+        result.append(doc)
+    return result
+
+
+# ─────────────────────────────────────────────
 # UNIFIED RETRIEVER
 # ─────────────────────────────────────────────
 
@@ -515,8 +550,8 @@ class UnifiedRetriever:
                     search_query, k=PER_COLLECTION_K
                 )
                 for doc, score in results:
-                    if score < 0.10:
-                        continue  # ignore very low relevance scores (cut-off threshold)
+                    if score < 0.30:
+                        continue  # tightened threshold (was 0.10) — reduces noise docs
                     doc.metadata["collection"] = name
                     doc.metadata["relevance_score"] = round(score, 4)
                     all_results.append((doc, score))
@@ -526,12 +561,14 @@ class UnifiedRetriever:
         all_results.sort(key=lambda x: x[1], reverse=True)
         semantic_docs = [doc for doc, _ in all_results[: self.top_k]]
 
-        # --- Step 6: Merge & Deduplicate ---
-        all_candidate_docs = exact_docs + keyword_docs + semantic_docs
+        # --- Step 6: Merge via Reciprocal Rank Fusion & Deduplicate ---
+        # RRF fairly merges the three ranked lists — docs found by multiple
+        # methods (exact + keyword + semantic) get boosted to the top.
+        fused_docs = _reciprocal_rank_fusion([exact_docs, keyword_docs, semantic_docs])
         deduped_docs = []
         seen_content = set()
-        for doc in all_candidate_docs:
-            snippet = doc.page_content[:80]
+        for doc in fused_docs:
+            snippet = doc.page_content[:100]
             if snippet not in seen_content:
                 seen_content.add(snippet)
                 deduped_docs.append(doc)

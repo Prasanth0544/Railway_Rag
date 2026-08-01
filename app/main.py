@@ -102,6 +102,86 @@ _SESSION_MAX_SIZE = 1000  # max unique sessions to keep in memory
 _session_history: dict[str, list[dict]] = {}  # {session_key: [{"q": ..., "a": ...}, ...]}
 _HISTORY_MAX_TURNS = 5  # keep last 5 exchanges per session
 
+# ── Rate Limiter (Phase 3A) ──────────────────────────────────
+from collections import defaultdict
+import time as _time
+
+_rate_limiter: dict[str, list[float]] = defaultdict(list)
+RATE_LIMIT_WINDOW = 60    # seconds
+RATE_LIMIT_MAX    = 15    # max queries per window per client
+
+def _check_rate_limit(client_ip: str) -> bool:
+    """Return True if request is allowed, False if rate limit exceeded."""
+    now = _time.time()
+    _rate_limiter[client_ip] = [t for t in _rate_limiter[client_ip] if now - t < RATE_LIMIT_WINDOW]
+    if len(_rate_limiter[client_ip]) >= RATE_LIMIT_MAX:
+        return False
+    _rate_limiter[client_ip].append(now)
+    # Guard against memory growth from many unique IPs
+    if len(_rate_limiter) > 5000:
+        oldest_ips = sorted(_rate_limiter, key=lambda ip: _rate_limiter[ip][0] if _rate_limiter[ip] else 0)[:1000]
+        for ip in oldest_ips:
+            del _rate_limiter[ip]
+    return True
+
+
+# ── Answer Post-Validation (Phase 3B) ────────────────────────
+import re as _re
+
+def _validate_answer(answer: str, context: str, train_no: str | None) -> list[str]:
+    """Flag potential hallucinations in the generated answer."""
+    warnings = []
+    # Check if answer mentions train numbers not present in context
+    answer_trains = set(_re.findall(r'\b(\d{5})\b', answer))
+    context_trains = set(_re.findall(r'\b(\d{5})\b', context))
+    if train_no:
+        context_trains.add(train_no)
+    for t in answer_trains:
+        if t not in context_trains:
+            warnings.append(f"⚠️ Answer mentions train {t} which was not found in retrieved context — possible hallucination.")
+    return warnings
+
+
+# ── Friendly Error Messages (Phase 3C) ───────────────────────
+ERROR_MESSAGES = {
+    "rate_limit":  "⏳ You're sending queries too fast. Please wait a moment and try again.",
+    "api_timeout": "⚠️ The live data service is temporarily slow. Showing schedule data instead.",
+    "no_results":  "🔍 I couldn't find specific information for that query. Try rephrasing or adding a train number.",
+    "server_error": "❌ Something went wrong on our end. Please try again in a few seconds.",
+}
+
+
+# ── Response Cache (Phase 6B) ────────────────────────────────
+import hashlib
+
+_response_cache: dict[str, dict] = {}
+RESPONSE_CACHE_TTL = 600  # 10 minutes
+RESPONSE_CACHE_MAX = 200  # max cached entries
+
+def _cache_key(question: str) -> str:
+    """Generate a cache key from a normalized question."""
+    return hashlib.md5(question.lower().strip().encode()).hexdigest()
+
+def _get_cached_response(question: str) -> dict | None:
+    """Return cached response if fresh, else None."""
+    key = _cache_key(question)
+    entry = _response_cache.get(key)
+    if entry and _time.time() - entry["ts"] < RESPONSE_CACHE_TTL:
+        return entry
+    elif entry:
+        del _response_cache[key]  # expired
+    return None
+
+def _set_cached_response(question: str, meta: dict, answer: str):
+    """Cache a response for STATIC queries only."""
+    if len(_response_cache) >= RESPONSE_CACHE_MAX:
+        # Evict oldest 50 entries
+        sorted_keys = sorted(_response_cache, key=lambda k: _response_cache[k]["ts"])
+        for k in sorted_keys[:50]:
+            del _response_cache[k]
+    key = _cache_key(question)
+    _response_cache[key] = {"ts": _time.time(), "meta": meta, "answer": answer}
+
 
 
 import threading
@@ -408,7 +488,27 @@ async def ask_question_smart(request: QuestionRequest, raw_request: Request):
             t0 = time.time()
             question = request.question
 
+            # Rate limit check (Phase 3A)
+            if not _check_rate_limit(client_ip):
+                meta = {"type": "meta", "intent": "RATE_LIMITED", "confidence": 1.0, "train_no": None, "num_documents_retrieved": 0, "avg_relevance_score": 0.0, "sources": [], "warnings": [], "llm_model": "", "embedding_model": ""}
+                yield f"data: {json.dumps(meta)}\n\n"
+                yield f"data: {json.dumps({'type': 'token', 'token': ERROR_MESSAGES['rate_limit']})}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'response_time_ms': 0})}\n\n"
+                return
+
+
+            # Response cache check (Phase 6B) — serve cached STATIC answers instantly
+            cached = _get_cached_response(question)
+            if cached:
+                logger.debug(f"[CACHE HIT] Serving cached response for: {question[:60]}")
+                yield f"data: {json.dumps(cached['meta'])}\n\n"
+                yield f"data: {json.dumps({'type': 'token', 'token': cached['answer']})}\n\n"
+                elapsed_ms = round((time.time() - t0) * 1000, 1)
+                yield f"data: {json.dumps({'type': 'done', 'response_time_ms': elapsed_ms, 'cached': True})}\n\n"
+                return
+
             # 1. Classify intent
+
             intent_res = classify_intent(question)
             intent = intent_res["intent"]
             train_no = intent_res["train_no"]
@@ -614,10 +714,40 @@ async def ask_question_smart(request: QuestionRequest, raw_request: Request):
                     del _session_history[k]
             # Send done event
             elapsed_ms = round((time.time() - t0) * 1000, 1)
-            yield f"data: {json.dumps({'type': 'done', 'response_time_ms': elapsed_ms})}\n\n"
+
+            # Answer post-validation (Phase 3B) — flag potential hallucinations
+            validation_warnings = _validate_answer(full_answer, merged_context, train_no)
+            if validation_warnings:
+                logger.info(f"[VALIDATION] Potential hallucination: {validation_warnings}")
+
+            # Analytics logging (Phase 5A)
+            try:
+                from app.analytics import log_query
+                log_query(
+                    question=question,
+                    intent=intent,
+                    confidence=intent_res["confidence"],
+                    train_no=train_no,
+                    num_docs=len(docs),
+                    avg_score=avg_score,
+                    response_time_ms=elapsed_ms,
+                    source="smart",
+                    live_api_used=(intent in ("LIVE", "HYBRID") and train_no is not None),
+                    live_api_success=bool(live_status and live_status.get("success")),
+                    validation_warnings=validation_warnings,
+                )
+            except Exception:
+                pass  # analytics should never break the main flow
+
+            # Cache STATIC responses for future re-use (Phase 6B)
+            if intent == "STATIC" and full_answer and not validation_warnings:
+                _set_cached_response(question, meta, full_answer)
+
+            yield f"data: {json.dumps({'type': 'done', 'response_time_ms': elapsed_ms, 'validation_warnings': validation_warnings})}\n\n"
 
         except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            logger.error(f"[STREAM] Error: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'message': ERROR_MESSAGES['server_error']})}\n\n"
 
     return StreamingResponse(
         event_stream(),
@@ -939,3 +1069,18 @@ async def health_check():
         collections=collections_detail,
     )
 
+
+# ── Admin Stats Endpoint (Phase 5B) ────────────────────────
+
+@app.get("/admin/stats", tags=["Admin"])
+async def get_admin_stats():
+    """
+    Returns query analytics: total queries, avg response time,
+    intent distribution, top questions, live API success rate,
+    and hallucination flag count.
+    """
+    try:
+        from app.analytics import get_stats
+        return get_stats()
+    except Exception as e:
+        return {"error": str(e)}

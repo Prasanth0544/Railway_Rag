@@ -295,24 +295,33 @@ def get_llm():
         )
 
 
-# ─────────────────────────────────────────────
-# DOCUMENT FORMATTER & SOURCE EXTRACTOR
-# ─────────────────────────────────────────────
+# Max context characters to send to LLM (~3000 tokens)
+# Prevents context overflow on broad queries with many retrieved docs
+MAX_CONTEXT_CHARS = 12000
 
 def format_docs(docs: list[Document]) -> str:
-    """Format retrieved documents into a context string for the LLM prompt."""
+    """Format retrieved documents into a context string for the LLM prompt.
+    Respects MAX_CONTEXT_CHARS budget — stops adding docs when budget exceeded."""
     if not docs:
         return "No relevant documents found."
 
     parts = []
+    total_chars = 0
     for i, doc in enumerate(docs, 1):
+        content = doc.page_content
+        # Stop adding docs when budget is exceeded (keep at least 1 doc)
+        if total_chars + len(content) > MAX_CONTEXT_CHARS and parts:
+            logger.debug(f"[BUDGET] Context budget hit at doc {i}/{len(docs)} ({total_chars} chars). Remaining docs skipped.")
+            break
+        total_chars += len(content)
         collection = doc.metadata.get("collection", "unknown")
         score      = doc.metadata.get("relevance_score", "N/A")
         parts.append(
-            f"[Doc {i} | {collection} | relevance: {score}]\n{doc.page_content}"
+            f"[Doc {i} | {collection} | relevance: {score}]\n{content}"
         )
 
     return "\n\n---\n\n".join(parts)
+
 
 
 def get_sources(docs: list[Document]) -> list[dict]:

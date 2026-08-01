@@ -34,3 +34,9 @@ Screenshot*.png
 
 # Ignore data/chroma_db
 data/chroma_db/
+
+implementation_plan.md
+
+# Analytics logs (runtime data)
+query_log.jsonl
+tests/eval_results.json

@@ -1,0 +1,182 @@
+[
+  {
+    "question": "What are the cancellation charges for AC 3 tier?",
+    "expected_keywords": ["48 hours", "25%", "cancellation", "charge", "refund"],
+    "category": "rules",
+    "intent": "STATIC"
+  },
+  {
+    "question": "Trains between Vijayawada and Hyderabad",
+    "expected_keywords": ["12727", "12728", "Godavari"],
+    "category": "routes",
+    "intent": "STATIC"
+  },
+  {
+    "question": "Where is 17225 now?",
+    "expected_keywords": ["Amaravathi", "departed", "station"],
+    "category": "live",
+    "intent": "LIVE"
+  },
+  {
+    "question": "Stops of train 12727",
+    "expected_keywords": ["Vijayawada", "Secunderabad", "Godavari"],
+    "category": "routes",
+    "intent": "STATIC"
+  },
+  {
+    "question": "What is the luggage limit for sleeper class?",
+    "expected_keywords": ["40", "kg", "luggage", "sleeper", "free"],
+    "category": "rules",
+    "intent": "STATIC"
+  },
+  {
+    "question": "Check PNR 8101234567",
+    "expected_keywords": ["PNR", "status"],
+    "category": "pnr",
+    "intent": "LIVE"
+  },
+  {
+    "question": "Is train 12622 running late?",
+    "expected_keywords": ["12622", "Tamil Nadu", "delay", "late", "time"],
+    "category": "live",
+    "intent": "LIVE"
+  },
+  {
+    "question": "Route of train 16317",
+    "expected_keywords": ["16317", "stop", "arrival", "departure"],
+    "category": "routes",
+    "intent": "STATIC"
+  },
+  {
+    "question": "What are TTE duties?",
+    "expected_keywords": ["TTE", "Travelling Ticket Examiner", "duty", "check", "ticket"],
+    "category": "rules",
+    "intent": "STATIC"
+  },
+  {
+    "question": "Trains from Chennai to Delhi",
+    "expected_keywords": ["Tamil Nadu", "Rajdhani", "Grand Trunk", "MAS", "NDLS"],
+    "category": "routes",
+    "intent": "STATIC"
+  },
+  {
+    "question": "What is tatkal booking?",
+    "expected_keywords": ["tatkal", "premium", "one day", "booking", "quota"],
+    "category": "rules",
+    "intent": "STATIC"
+  },
+  {
+    "question": "Vijayawada station code",
+    "expected_keywords": ["BZA", "Vijayawada", "Junction"],
+    "category": "stations",
+    "intent": "STATIC"
+  },
+  {
+    "question": "Running status of 12728",
+    "expected_keywords": ["12728", "Godavari", "status"],
+    "category": "live",
+    "intent": "LIVE"
+  },
+  {
+    "question": "What trains pass through Rajahmundry?",
+    "expected_keywords": ["RJY", "Rajahmundry", "train"],
+    "category": "routes",
+    "intent": "STATIC"
+  },
+  {
+    "question": "Cancellation charges for confirmed ticket",
+    "expected_keywords": ["cancellation", "confirmed", "charge", "refund"],
+    "category": "rules",
+    "intent": "STATIC"
+  },
+  {
+    "question": "What is RAC in railway?",
+    "expected_keywords": ["RAC", "Reservation Against Cancellation", "berth", "shared"],
+    "category": "rules",
+    "intent": "STATIC"
+  },
+  {
+    "question": "Trains via Guntur Junction",
+    "expected_keywords": ["GNT", "Guntur", "train"],
+    "category": "routes",
+    "intent": "STATIC"
+  },
+  {
+    "question": "Where is 12622 train now?",
+    "expected_keywords": ["12622", "Tamil Nadu", "station", "departed"],
+    "category": "live",
+    "intent": "LIVE"
+  },
+  {
+    "question": "How to book tatkal ticket?",
+    "expected_keywords": ["tatkal", "IRCTC", "10:00", "booking", "premium"],
+    "category": "rules",
+    "intent": "STATIC"
+  },
+  {
+    "question": "Senior citizen concession in Indian Railways",
+    "expected_keywords": ["senior", "citizen", "concession", "discount", "age"],
+    "category": "rules",
+    "intent": "STATIC"
+  },
+  {
+    "question": "What is the weather today?",
+    "expected_keywords": [],
+    "category": "out_of_domain",
+    "intent": "OUT_OF_DOMAIN"
+  },
+  {
+    "question": "Tell me a joke",
+    "expected_keywords": [],
+    "category": "out_of_domain",
+    "intent": "OUT_OF_DOMAIN"
+  },
+  {
+    "question": "Trains from Vizag to Hyderabad",
+    "expected_keywords": ["VSKP", "Visakhapatnam", "SC", "Secunderabad", "train"],
+    "category": "routes",
+    "intent": "STATIC"
+  },
+  {
+    "question": "What is the fine for travelling without ticket?",
+    "expected_keywords": ["fine", "penalty", "without ticket", "250", "excess"],
+    "category": "rules",
+    "intent": "STATIC"
+  },
+  {
+    "question": "Spot train 12625",
+    "expected_keywords": ["12625", "Kerala", "status"],
+    "category": "live",
+    "intent": "LIVE"
+  },
+  {
+    "question": "What classes are available in Vande Bharat?",
+    "expected_keywords": ["Vande Bharat", "CC", "EC", "Chair Car", "Executive"],
+    "category": "rules",
+    "intent": "STATIC"
+  },
+  {
+    "question": "Platform number for 12727 at Vijayawada",
+    "expected_keywords": ["12727", "Vijayawada", "BZA", "platform"],
+    "category": "live",
+    "intent": "HYBRID"
+  },
+  {
+    "question": "Difference between GNWL and PQWL",
+    "expected_keywords": ["GNWL", "PQWL", "General", "Pooled", "waitlist"],
+    "category": "rules",
+    "intent": "STATIC"
+  },
+  {
+    "question": "Trains from BZA to SC",
+    "expected_keywords": ["Vijayawada", "Secunderabad", "train"],
+    "category": "routes",
+    "intent": "STATIC"
+  },
+  {
+    "question": "What is the refund policy for tatkal tickets?",
+    "expected_keywords": ["tatkal", "refund", "no refund", "cancellation"],
+    "category": "rules",
+    "intent": "STATIC"
+  }
+]
