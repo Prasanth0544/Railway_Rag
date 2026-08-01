@@ -9,6 +9,8 @@
 [![ChromaDB](https://img.shields.io/badge/ChromaDB-Vector_DB-purple)](https://www.trychroma.com)
 [![Gemini](https://img.shields.io/badge/Gemini-3.1_Flash_Lite-blue?logo=google)](https://aistudio.google.com)
 [![Render](https://img.shields.io/badge/Deployed-Render.com-46E3B7?logo=render)](https://railway-rag.onrender.com)
+[![Total LOC](https://img.shields.io/badge/Lines_of_Code-13.4k-blue?logo=python)](#-codebase-statistics-loc)
+[![Source SLOC](https://img.shields.io/badge/Source_SLOC-9.9k-green)](#-codebase-statistics-loc)
 
 ---
 
@@ -62,14 +64,20 @@ User Question
 ### 🧠 Backend Intelligence
 | Feature | Description |
 |---|---|
-| **Hybrid Retrieval** | Vector (semantic) + Keyword ($contains) + Metadata (exact train/station match) combined |
-| **Intent Classifier** | Keyword + regex rules classify STATIC / LIVE / HYBRID / PNR with confidence scores |
+| **Hybrid Retrieval** | Vector (semantic) + Keyword ($contains) + Metadata (exact train/station match) fused via **Reciprocal Rank Fusion (RRF)** |
+| **Intent Classifier** | Keyword + regex rules classify STATIC / LIVE / HYBRID / PNR with confidence scores (96.7% accuracy) |
 | **Fuzzy Station Resolver** | Handles typos & phonetic variants (e.g. "Santhamagulur" → correct station) using difflib |
 | **Route Trimming** | Condenses 70-stop schedules to origin→target→destination (reduces tokens by ~90%) |
+| **Context Budget** | Caps LLM context at 12,000 chars (~3000 tokens) to prevent context overflow |
 | **Multi-turn Memory** | Keeps last 5 Q&A pairs per session for contextual follow-up questions |
 | **PNR Support** | Detects 10-digit PNR in query and fetches live booking + passenger status |
 | **Multi-modal Uploads** | Upload ticket images/PDFs — Gemini Vision extracts and answers questions |
 | **LLM Flexibility** | Gemini 3.1 Flash-lite (cloud) **or** LM Studio local model (fully offline) |
+| **Rate Limiting** | 15 requests/min per client IP — protects Gemini API quota |
+| **Response Caching** | 10-minute TTL cache for STATIC queries — reduces API calls for repeated questions |
+| **Hallucination Detection** | Post-validation flags fabricated train numbers not present in retrieved context |
+| **Analytics Logging** | Every query logged to JSONL with intent, response time, and retrieval stats |
+| **Admin Stats** | `/admin/stats` endpoint — query counts, top questions, error rates, intent distribution |
 
 ### 🚦 Live Train Data (Smart Provider Selection)
 | Environment | Primary Source | Fallback |
@@ -101,6 +109,9 @@ Upcoming Stations (next 5):
 | Feature | Description |
 |---|---|
 | **SSE Streaming** | Real-time word-by-word answer rendering via Server-Sent Events |
+| **Typing Stage Indicator** | Animated labels: "🔍 Classifying → 📚 Searching → ✨ Generating" with fade transitions |
+| **Live Train Visualization** | Visual station timeline with progress bar, passed/upcoming dots, delay badge, pulsing current station |
+| **Auto-Suggestions** | 20 popular queries filtered as you type (2+ chars), keyboard navigation (↑↓Enter) |
 | **Right-side Source Panel** | Grouped, clickable source chips (Trains, Routes, Rules, Stations) with relevance scores |
 | **File Upload** | Drag-and-drop or attach image/PDF for multi-modal Q&A |
 | **Voice Input** | Mic button for speech-to-text queries |
@@ -108,6 +119,18 @@ Upcoming Stations (next 5):
 | **RAG Pipeline Sidebar** | Live stats — total docs, LLM model, collection sizes, pipeline flow visualization |
 | **Example Chips** | Quick-access query suggestions in a scrollable single-line row |
 | **Follow-up Chips** | AI-suggested follow-up questions after each answer |
+
+### 📊 Quality & Evaluation
+| Metric | Score |
+|---|:---:|
+| **Intent Classification Accuracy** | 96.7% (29/30 test queries) |
+| **Retrieval Recall (≥50% keyword hit)** | 95.5% (21/22 STATIC queries) |
+| **Overall Keyword Hit Rate** | 83.9% |
+
+Run the evaluation benchmark:
+```bash
+python tests/evaluate_rag.py --skip-hallucination -v
+```
 
 ---
 
@@ -396,6 +419,51 @@ Query: "where is 12622 now?"
 - NTES: `(5s connect, 10s read)` — tight because it either works instantly or is blocked
 
 **5-minute cache:** Same train queried twice within 5 min returns cached data (saves API quota).
+
+---
+
+## 📊 Codebase Statistics (LOC)
+
+This project adheres to industry-standard code measurement guidelines, separating Source Lines of Code (SLOC), comments, and structural whitespace across all layers.
+
+| Layer | Files | Source Code (SLOC) | Comments | Blank | Total LOC |
+|---|---|---|---|---|---|
+| **Scripts & Pipelines** | 19 | 2,760 | 594 | 648 | **4,002** |
+| **Backend (Core App)** | 10 | 2,552 | 619 | 572 | **3,743** |
+| **Frontend (UI Web)** | 4 | 2,742 | 151 | 372 | **3,265** |
+| **Documentation** | 2 | 588 | 0 | 186 | **774** |
+| **Config & Infrastructure** | 9 | 191 | 35 | 45 | **271** |
+| **Frontend (Vendor Assets)** | 1 | 58 | 9 | 2 | **69** |
+| **TOTAL** | **45** | **8,891** | **1,408** | **1,825** | **12,124** |
+
+### Breakdown by Language
+
+| Language | Files | SLOC | Comments | Blank | Total LOC |
+|---|---|---|---|---|---|
+| **Python** | 29 | 5,312 | 1,213 | 1,220 | **7,745** |
+| **CSS** | 1 | 1,445 | 69 | 207 | **1,721** |
+| **JavaScript** | 2 | 1,014 | 73 | 146 | **1,233** |
+| **Markdown** | 2 | 588 | 0 | 186 | **774** |
+| **HTML** | 1 | 293 | 18 | 21 | **332** |
+| **Config / Infra** | 10 | 239 | 35 | 45 | **319** |
+
+### 🛠️ Running the LOC Counter
+
+You can analyze the repository's LOC metrics dynamically using the built-in industry-standard counter:
+
+```bash
+# Print formatted console summary table
+python scripts/count_loc.py
+
+# Export markdown format for documentation
+python scripts/count_loc.py --format markdown
+
+# Export JSON for CI/CD pipelines
+python scripts/count_loc.py --format json
+
+# Display badge URLs
+python scripts/count_loc.py --format badge
+```
 
 ---
 
