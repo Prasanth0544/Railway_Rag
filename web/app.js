@@ -139,6 +139,76 @@ function buildRouteViz(stations) {
 }
 
 
+/** Phase 4B: Build live train progress visualization from answer text */
+function buildLiveTrainViz(answerText, sources) {
+  // Only show for live status sources
+  const liveSource = sources?.find(s => s.type === 'live_status');
+  if (!liveSource) return '';
+
+  // Parse passed and upcoming stations from the answer
+  const passedMatches = answerText.match(/\[PASSED\]\s*([^\n|]+)/gi) || [];
+  const nextMatches = answerText.match(/\[NEXT\]\s*([^\n|]+)/gi) || [];
+
+  // Also try to parse from "Recently Passed" and "Upcoming Stations" sections
+  const passed = passedMatches.map(m => {
+    const name = m.replace(/\[PASSED\]\s*/i, '').split('|')[0].trim();
+    return name;
+  });
+  const upcoming = nextMatches.map(m => {
+    const name = m.replace(/\[NEXT\]\s*/i, '').split('|')[0].trim();
+    return name;
+  });
+
+  if (passed.length === 0 && upcoming.length === 0) return '';
+
+  // Parse progress percentage
+  const progressMatch = answerText.match(/(\d+)%\s*(?:of route|completed|journey)/i);
+  const progress = progressMatch ? parseInt(progressMatch[1]) : null;
+
+  // Parse delay
+  const delayMatch = answerText.match(/(\d+)\s*(?:MINUTES?|MIN)\s*LATE/i);
+  const onTimeMatch = answerText.match(/On\s*Time/i);
+  const delayText = delayMatch ? `${delayMatch[1]} min late` : onTimeMatch ? 'On Time' : null;
+  const delayClass = delayMatch ? 'delay-late' : 'delay-ontime';
+
+  // Build station dots
+  const allStations = [...passed, ...upcoming];
+  const currentIdx = passed.length; // current position is between passed and upcoming
+
+  const stationDots = allStations.map((name, i) => {
+    const isPassed = i < passed.length;
+    const isCurrent = i === passed.length - 1; // last passed station = current
+    const dotClass = isPassed ? 'dot-passed' : 'dot-upcoming';
+    const currentMarker = isCurrent ? ' dot-current' : '';
+    const shortName = name.length > 15 ? name.substring(0, 13) + '…' : name;
+    return `<div class="live-station ${dotClass}${currentMarker}">
+      <div class="live-dot"></div>
+      <div class="live-station-name">${esc(shortName)}</div>
+      ${isCurrent ? '<div class="live-here-badge">HERE</div>' : ''}
+    </div>`;
+  }).join('');
+
+  // Progress bar percentage
+  const progressPct = progress !== null ? progress : (passed.length / Math.max(allStations.length, 1) * 100);
+
+  return `
+    <div class="live-train-viz">
+      <div class="live-viz-header">
+        <span class="live-viz-title">🚂 Live Journey Progress</span>
+        ${delayText ? `<span class="live-delay-badge ${delayClass}">${esc(delayText)}</span>` : ''}
+        ${progress !== null ? `<span class="live-progress-pct">${progress}%</span>` : ''}
+      </div>
+      <div class="live-progress-bar">
+        <div class="live-progress-fill" style="width:${Math.min(progressPct, 100)}%"></div>
+      </div>
+      <div class="live-stations-timeline">
+        ${stationDots}
+      </div>
+    </div>`;
+}
+
+
+
 /** Build ticket status card HTML for PNR status */
 function buildTicketCard(s) {
   if (!s || s.type !== 'pnr_status') return '';
@@ -363,13 +433,36 @@ function appendLoading(question) {
       <div class="ai-avatar">🚂</div>
       <div class="answer-content">
         <div class="answer-card">
-          <div class="typing-dots"><span></span><span></span><span></span></div>
-          <span style="color:var(--ink2);font-size:.88rem">Searching 34,000+ documents…</span>
+          <div class="typing-stage-indicator">
+            <div class="typing-dots"><span></span><span></span><span></span></div>
+            <span class="stage-label" id="stageLabel-${id}">🔍 Classifying your question…</span>
+          </div>
         </div>
       </div>
     </div>`;
   chatArea.appendChild(el);
   chatArea.scrollTop = chatArea.scrollHeight;
+
+  // Auto-advance stage labels with animation
+  const stages = [
+    { text: '🔍 Classifying your question…', delay: 0 },
+    { text: '📚 Searching knowledge base…', delay: 800 },
+    { text: '✨ Generating answer…', delay: 2500 },
+  ];
+  const labelEl = document.getElementById(`stageLabel-${id}`);
+  if (labelEl) {
+    stages.forEach(({ text, delay }) => {
+      setTimeout(() => {
+        if (labelEl && labelEl.isConnected) {
+          labelEl.style.opacity = '0';
+          setTimeout(() => {
+            labelEl.textContent = text;
+            labelEl.style.opacity = '1';
+          }, 200);
+        }
+      }, delay);
+    });
+  }
   return id;
 }
 
@@ -605,6 +698,17 @@ async function submitQuestion(question) {
           llmModel: `${payload.llm_model} (${intent})`,
           embedModel: payload.embedding_model
         };
+
+        // Phase 4A: Update stage label based on intent
+        const stageEl = document.getElementById(`stageLabel-${msgId}`);
+        if (stageEl && stageEl.isConnected) {
+          const liveUsed = intent === 'LIVE' || intent === 'HYBRID';
+          stageEl.style.opacity = '0';
+          setTimeout(() => {
+            stageEl.textContent = liveUsed ? '🚂 Fetching live train data…' : '✨ Generating answer…';
+            stageEl.style.opacity = '1';
+          }, 200);
+        }
         
         // Build warning banner if present
         const warningHtml = warnings.length 
@@ -667,6 +771,13 @@ async function submitQuestion(question) {
               const textEl = cardEl.querySelector('.answer-text');
               if (textEl) textEl.insertAdjacentHTML('afterend', pnrCardHtml);
             }
+          }
+
+          // Phase 4B: Render live train progress visualization
+          const liveVizHtml = buildLiveTrainViz(answerText, sources);
+          if (liveVizHtml) {
+            const textEl = cardEl.querySelector('.answer-text');
+            if (textEl) textEl.insertAdjacentHTML('afterend', liveVizHtml);
           }
 
           // Remove placeholder sources shell
@@ -1161,4 +1272,121 @@ chipButtons.forEach(btn => {
   btn.addEventListener('click', () => {
     if (window.innerWidth <= 768) closeSidebar();
   });
+});
+
+
+// ─── Phase 4C: Auto-suggestions ────────────────────────────
+
+const suggestionsDropdown = document.getElementById('suggestionsDropdown');
+
+// Curated popular queries for instant suggestions
+const POPULAR_SUGGESTIONS = [
+  'Trains between Vijayawada and Hyderabad',
+  'Route of train 12727',
+  'Cancellation charges for AC 3 tier',
+  'What is the luggage limit for sleeper class?',
+  'Running status of 12728',
+  'Trains from Chennai to Delhi',
+  'What are TTE duties?',
+  'What is tatkal booking?',
+  'Trains via Rajahmundry',
+  'Vijayawada station code',
+  'Senior citizen concession in railways',
+  'Refund policy for tatkal tickets',
+  'What is the fine for ticketless travel?',
+  'Classes available in Vande Bharat',
+  'Difference between GNWL and PQWL',
+  'What is RAC in railway?',
+  'Trains from Vizag to Hyderabad',
+  'How to book tatkal ticket?',
+  'Platform number for 12727 at Vijayawada',
+  'Sleeper luggage limit',
+];
+
+let suggestionIndex = -1;
+
+function showSuggestions(filter) {
+  if (!suggestionsDropdown) return;
+
+  const query = (filter || '').toLowerCase().trim();
+  if (query.length < 2) {
+    suggestionsDropdown.style.display = 'none';
+    return;
+  }
+
+  const matches = POPULAR_SUGGESTIONS.filter(s =>
+    s.toLowerCase().includes(query)
+  ).slice(0, 6);
+
+  if (matches.length === 0) {
+    suggestionsDropdown.style.display = 'none';
+    return;
+  }
+
+  suggestionIndex = -1;
+  suggestionsDropdown.innerHTML = matches.map((s, i) => {
+    // Highlight matching portion
+    const idx = s.toLowerCase().indexOf(query);
+    const before = s.substring(0, idx);
+    const match = s.substring(idx, idx + query.length);
+    const after = s.substring(idx + query.length);
+    return `<div class="suggestion-item" data-index="${i}" data-value="${esc(s)}">
+      ${esc(before)}<strong>${esc(match)}</strong>${esc(after)}
+    </div>`;
+  }).join('');
+
+  suggestionsDropdown.style.display = 'block';
+
+  // Wire click handlers
+  suggestionsDropdown.querySelectorAll('.suggestion-item').forEach(item => {
+    item.addEventListener('mousedown', (e) => {
+      e.preventDefault(); // prevent blur from firing first
+      questionInput.value = item.dataset.value;
+      updateCharCount();
+      suggestionsDropdown.style.display = 'none';
+      questionInput.focus();
+    });
+  });
+}
+
+function hideSuggestions() {
+  if (suggestionsDropdown) {
+    suggestionsDropdown.style.display = 'none';
+    suggestionIndex = -1;
+  }
+}
+
+// Input event — filter suggestions as user types
+questionInput.addEventListener('input', () => {
+  showSuggestions(questionInput.value);
+});
+
+// Blur event — hide suggestions (with delay for click handling)
+questionInput.addEventListener('blur', () => {
+  setTimeout(() => hideSuggestions(), 200);
+});
+
+// Keyboard navigation for suggestions
+questionInput.addEventListener('keydown', (e) => {
+  if (!suggestionsDropdown || suggestionsDropdown.style.display === 'none') return;
+
+  const items = suggestionsDropdown.querySelectorAll('.suggestion-item');
+  if (!items.length) return;
+
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    suggestionIndex = Math.min(suggestionIndex + 1, items.length - 1);
+    items.forEach((item, i) => item.classList.toggle('active', i === suggestionIndex));
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    suggestionIndex = Math.max(suggestionIndex - 1, 0);
+    items.forEach((item, i) => item.classList.toggle('active', i === suggestionIndex));
+  } else if (e.key === 'Enter' && suggestionIndex >= 0) {
+    e.preventDefault();
+    questionInput.value = items[suggestionIndex].dataset.value;
+    updateCharCount();
+    hideSuggestions();
+  } else if (e.key === 'Escape') {
+    hideSuggestions();
+  }
 });
