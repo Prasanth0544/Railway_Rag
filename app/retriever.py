@@ -44,8 +44,12 @@ ALL_COLLECTIONS = ["railway_rules", "trains", "stations", "train_routes", "refer
 # Results to pull per collection before merging
 PER_COLLECTION_K = 5  # reduced from 8 to lower per-query memory usage
 
-# Max docs returned from a single keyword $contains scan (prevent unbounded fetches)
-KEYWORD_SCAN_LIMIT = 30
+# Max docs returned from a single keyword $contains scan
+# Must be large enough to cover all routes for any station code.
+# NRT appears in 40 routes, BVRT in 60 — so 30 was cutting off results
+# before the Python intersection could find trains with BOTH stations.
+# 300 safely covers all routes per station (max observed: ~120 routes).
+KEYWORD_SCAN_LIMIT = 300
 
 
 # ─────────────────────────────────────────────
@@ -439,7 +443,135 @@ class UnifiedRetriever:
 
         return exact_docs, matched_numbers
 
+    # ── Train Validation ─────────────────────────────────────────────────────
+
+    def _validate_route_candidates(
+        self,
+        docs: list[Document],
+        station_terms: list[tuple[str, str]],
+    ) -> tuple[list[Document], list[Document], list[str]]:
+        """
+        Validate candidate docs for a 2-station route query.
+
+        Checks (for train_route docs):
+          1. Both queried stations present in doc content
+          2. Correct travel direction — FROM station before TO station in stops
+          3. Wrong-direction train metadata (trains collection) dropped from other_docs
+
+        Returns:
+          valid_routes  — route docs that pass all checks (both_match equivalent)
+          other_docs    — non-route docs + correctly filtered pass-throughs
+          both_trains   — list of matched train_no strings
+        """
+        valid_routes: list[Document] = []
+        other_docs: list[Document] = []
+
+        from_canon, from_code = station_terms[0]
+        to_canon,   to_code   = station_terms[1]
+
+        for doc in docs:
+            src_type = doc.metadata.get("source_type", "")
+
+            # Non-route docs go to other_docs by default
+            if src_type != "train_route":
+                other_docs.append(doc)
+                continue
+
+            content_lower = doc.page_content.lower()
+
+            # Check 1: Both stations present
+            has_from = from_canon in content_lower or from_code in content_lower
+            has_to   = to_canon   in content_lower or to_code   in content_lower
+            if not (has_from and has_to):
+                continue  # drop silently — doesn't serve this route
+
+            # Check 2: Correct direction (FROM before TO in stop sequence)
+            if "Stops" in doc.page_content:
+                try:
+                    stops_raw = doc.page_content.split("Stops")[1]
+                    stops = [s.strip().lower() for s in stops_raw.split(">")]
+                    fi = next((i for i, s in enumerate(stops) if from_canon in s or from_code in s), -1)
+                    ti = next((i for i, s in enumerate(stops) if to_canon   in s or to_code   in s), -1)
+                    if fi >= 0 and ti >= 0 and fi >= ti:
+                        logger.debug(
+                            f"[DIR] Dropped wrong-direction {doc.metadata.get('train_no','?')}: "
+                            f"{from_code}@{fi} >= {to_code}@{ti}"
+                        )
+                        continue  # wrong direction
+                except Exception:
+                    pass  # parsing failed — keep doc to be safe
+
+            valid_routes.append(doc)
+
+        both_trains = [d.metadata.get("train_no", "?") for d in valid_routes]
+        logger.debug(f"[VALIDATE] valid_routes={len(valid_routes)}, trains={both_trains}")
+
+        # Check 3: Drop trains collection docs for trains NOT in valid set
+        if both_trains:
+            filtered_other: list[Document] = []
+            for doc in other_docs:
+                if (doc.metadata.get("collection") == "trains"
+                        and doc.metadata.get("train_no") not in both_trains):
+                    logger.debug(f"[VALIDATE] Dropped wrong train metadata: {doc.metadata.get('train_no','?')}")
+                    continue
+                filtered_other.append(doc)
+            other_docs = filtered_other
+
+        return valid_routes, other_docs, both_trains
+
+    # ── Train Name & Schedule Enrichment ─────────────────────────────────────
+
+    def _enrich_with_train_names(
+        self,
+        valid_routes: list[Document],
+        other_docs: list[Document],
+        both_trains: list[str],
+    ) -> tuple[list[Document], list[Document]]:
+        """
+        For each matched train, fetch its metadata doc from the trains collection
+        and inject it at the top of valid_routes. Also stamps 'Runs on: X' onto
+        the matching route doc so Gemini can distinguish daily vs seasonal trains.
+        """
+        if "trains" not in self.vector_stores:
+            return valid_routes, other_docs
+        try:
+            trains_col = self.client.get_collection("trains")
+            for train_no in both_trains:
+                res = trains_col.get(
+                    where={"train_no": train_no},
+                    limit=1,
+                    include=["documents", "metadatas"],
+                )
+                if not res["documents"]:
+                    continue
+
+                train_info = res["documents"][0]
+
+                # Inject name doc at front so Gemini sees name before route
+                name_doc = Document(
+                    page_content=train_info,
+                    metadata={**res["metadatas"][0], "relevance_score": 0.95},
+                )
+                valid_routes.insert(0, name_doc)
+
+                # Stamp running days onto matching route doc
+                runs_on = ""
+                if "Runs on:" in train_info:
+                    runs_on = train_info.split("Runs on:")[1].split(".")[0].strip()
+                if runs_on:
+                    for rd in valid_routes:
+                        if (rd.metadata.get("source_type") == "train_route"
+                                and rd.metadata.get("train_no") == train_no):
+                            rd.page_content += f" | Runs on: {runs_on}"
+
+                logger.debug(f"[ENRICH] Injected name+schedule for {train_no} (runs: {runs_on})")
+        except Exception as exc:
+            logger.debug(f"[ENRICH] Train name lookup failed: {exc}")
+
+        return valid_routes, other_docs
+
     def retrieve(self, query: str) -> list[Document]:
+
         """
         Search relevant collections and return the top-k most relevant
         documents merged, sorted by score.
@@ -459,8 +591,48 @@ class UnifiedRetriever:
 
         # --- Step 2: Resolve ALL station names in the query ---
         all_stations = self._resolve_all_stations(query)
+        # Expose last resolved stations to RAGChain for confidence check
+        self._last_all_stations = all_stations
         # Keep backward-compatible single station_info for route trimming logic
         station_info = all_stations[0] if all_stations else None
+
+
+        # --- Step 2b: Direct station code extraction (handles NRT, BVRT, bza, sc etc.) ---
+        # Extracts 2-5 letter tokens from the query and looks them up directly in
+        # ChromaDB station metadata. This handles:
+        #   - Lowercase: "trains from nrt to bvrt"
+        #   - Uppercase: "trains from NRT to BVRT"
+        # The fuzzy resolver misses short codes (< 4 chars) and fails when map is empty.
+        raw_codes = re.findall(r'\b([a-zA-Z]{2,5})\b', query)
+        _code_noise = {
+            "AC", "DC", "ID", "OK", "OR", "IS", "AT", "IN", "OF",
+            "TO", "BY", "UP", "ON", "AS", "AN", "MY", "WE", "THE",
+            "AND", "FOR", "FROM", "VIA", "ARE", "GET", "NOW", "DAY",
+            "TRAIN", "TRAINS", "ROUTE", "STOP", "STOPS",
+        }
+        for raw in raw_codes:
+            code = raw.upper()          # normalize to uppercase (NRT, BVRT, BZA)
+            if code in _code_noise:
+                continue
+            already_found = any(c == code for _, c in all_stations)
+            if already_found:
+                continue
+            if "stations" in self.vector_stores:
+                try:
+                    col = self.client.get_collection("stations")
+                    res = col.get(
+                        where={"station_code": code},
+                        limit=1,
+                        include=["metadatas"],
+                    )
+                    if res["metadatas"]:
+                        sname = res["metadatas"][0].get("station_name", code)
+                        all_stations.append((sname, code))
+                        if station_info is None:
+                            station_info = (sname, code)
+                        logger.debug(f"[CODE_LOOKUP] '{raw}' → '{code}' ({sname})")
+                except Exception as exc:
+                    logger.debug(f"[CODE_LOOKUP] Failed for '{code}': {exc}")
 
         # Build enriched search query with all resolved names + codes
         search_query = query
@@ -527,8 +699,12 @@ class UnifiedRetriever:
                                         final_score = round(base_score * col_weight, 4)
                                         
                                         # Cutoff threshold — ignore weak keyword matches (e.g. single off-hand mention in rules)
-                                        if final_score < 0.75:
+                                        # Threshold must be ≤ 0.74 for train_route docs where a station code
+                                        # appears exactly once (freq=1 → score=0.74). The old 0.75 cut them off.
+                                        cutoff = 0.65 if name == "train_routes" else 0.75
+                                        if final_score < cutoff:
                                             continue
+
                                             
                                         doc = Document(
                                             page_content=content_raw,
@@ -562,8 +738,6 @@ class UnifiedRetriever:
         semantic_docs = [doc for doc, _ in all_results[: self.top_k]]
 
         # --- Step 6: Merge via Reciprocal Rank Fusion & Deduplicate ---
-        # RRF fairly merges the three ranked lists — docs found by multiple
-        # methods (exact + keyword + semantic) get boosted to the top.
         fused_docs = _reciprocal_rank_fusion([exact_docs, keyword_docs, semantic_docs])
         deduped_docs = []
         seen_content = set()
@@ -573,32 +747,59 @@ class UnifiedRetriever:
                 seen_content.add(snippet)
                 deduped_docs.append(doc)
 
-        # --- Step 6b: Two-Station Intersection Boost ---
-        # When query has 2+ stations, boost docs containing ALL station terms to top.
-        # This fixes BZA→SC queries where docs only matching one station dominate.
+        # --- Step 6b + 7 + 9: Train Validation (all checks in one stage) ---
+        # Check 1: Both queried stations present in doc
+        # Check 2: Correct travel direction (FROM before TO in stop sequence)
+        # Check 3: Drop wrong-direction train metadata docs from semantic results
         if len(all_stations) >= 2:
-            station_terms = []
-            for canon, code in all_stations:
-                station_terms.append((canon.lower(), code.lower()))
+            station_terms = [(canon.lower(), code.lower()) for canon, code in all_stations]
+            valid_routes, other_docs, both_trains = self._validate_route_candidates(
+                deduped_docs, station_terms
+            )
 
-            def _doc_matches_all_stations(doc: Document) -> bool:
-                content_lower = doc.page_content.lower()
-                for canon, code in station_terms:
-                    if canon not in content_lower and code not in content_lower:
-                        return False
-                return True
+            if valid_routes:
+                # ── Metadata injection REMOVED (2026-08-05) ──────────────────
+                # All 12,341 train_routes docs are now in the enriched format:
+                #   "Train 12727 — Godavari SF Express (Daily). From VSKP to HYB. Stops..."
+                # Name + running days are already embedded in the route doc text.
+                # Injecting the trains-collection doc would DUPLICATE this info,
+                # wasting ~230 chars × N trains = ~8,000+ chars for broad queries.
+                # _enrich_with_train_names() is kept below for reference/rollback only.
+                logger.debug(f"[ENRICH] Injection skipped — all route docs are enriched format ({len(valid_routes)} docs)")
+            else:
+                route_codes = [d.metadata.get('train_no', '?') for d in deduped_docs
+                               if d.metadata.get('source_type') == 'train_route']
+                logger.debug(f"[INTERSECT] NO match. station_terms={station_terms}, routes present={route_codes}")
 
-            both_match = [d for d in deduped_docs if _doc_matches_all_stations(d)]
-            one_match  = [d for d in deduped_docs if not _doc_matches_all_stations(d)]
-            if both_match:
-                logger.debug(f"[INTERSECT] {len(both_match)} docs match ALL stations, {len(one_match)} match only one")
-            deduped_docs = both_match + one_match
+            deduped_docs = valid_routes + other_docs
 
-        # --- Step 7: Trim Route Schedules to avoid LLM context length overflow ---
-        # Only trim when query is about a station (not a specific train number).
-        # For train number queries, the user wants the full schedule.
+
+
+
+        # --- Step 6c: Filter out wrong station docs ---
+        # When we have resolved specific station codes from the query (e.g. NRT, BVRT),
+        # remove any station-type docs whose code doesn't match.
+        # This stops semantic search from returning NRSP (Narasimhapura) when user
+        # queries "nrt" and confusing Gemini into wrong station name mappings.
+        if all_stations:
+            resolved_codes = {code.upper() for _, code in all_stations}
+            filtered: list[Document] = []
+            for doc in deduped_docs:
+                if doc.metadata.get("source_type") == "station":
+                    doc_code = doc.metadata.get("station_code", "").upper()
+                    if doc_code and doc_code not in resolved_codes:
+                        logger.debug(f"[FILTER] Dropped wrong station doc: {doc_code} (not in {resolved_codes})")
+                        continue   # skip this wrong station doc
+                filtered.append(doc)
+            deduped_docs = filtered
+
+        # --- Step 7: Trim Route Schedules to key stops only ---
+        # Trims each train_route doc to: train origin + queried stations + train destination.
+        # Only applies to station-based queries (not specific train number lookups).
+        # Fixes: old code looked for "Schedule:" (never present) and split by "|" (wrong).
+        #        Actual DB format: "Train X from A to B. Stops (N): A > B > C > D"
         if all_stations and not train_number_detected:
-            # Collect all station codes + canonical names across ALL resolved stations
+            # Build set of all queried station terms (codes + canonical names)
             all_station_terms = set()
             for canon, code in all_stations:
                 all_station_terms.add(canon.lower())
@@ -607,24 +808,53 @@ class UnifiedRetriever:
             for doc in deduped_docs:
                 if doc.metadata.get("source_type") == "train_route":
                     content = doc.page_content
-                    if "Schedule:" in content:
-                        parts = content.split("Schedule:")
-                        route_meta = parts[0]
-                        schedule_part = parts[1]
 
-                        stops_list = schedule_part.split("|")
-                        trimmed_stops = []
+                    # Match actual DB format: "Stops (N): A > B > C"
+                    # Also handles "Stops:" without count
+                    if "Stops" not in content:
+                        continue  # can't trim — leave doc as-is
 
-                        for idx, stop in enumerate(stops_list):
-                            stop_lower = stop.lower()
-                            is_target = any(term in stop_lower for term in all_station_terms)
-                            is_first = (idx == 0)
-                            is_last = (idx == len(stops_list) - 1)
+                    # Split into header ("Train X from A to B. ") and stops section
+                    stops_idx = content.index("Stops")
+                    header = content[:stops_idx]
+                    stops_section = content[stops_idx:]
 
-                            if is_target or is_first or is_last:
-                                trimmed_stops.append(stop.strip())
+                    # Remove "Stops (N): " or "Stops: " prefix to get raw stops
+                    colon_idx = stops_section.index(":")
+                    stops_raw = stops_section[colon_idx + 1:].strip()
 
-                        doc.page_content = route_meta + "Schedule: " + " | ".join(trimmed_stops)
+                    # Split by ">" — actual separator in ChromaDB documents
+                    all_stops = [s.strip() for s in stops_raw.split(">") if s.strip()]
+
+                    if len(all_stops) <= 4:
+                        continue  # already short enough — skip trimming
+
+                    # Keep: first stop (train origin) + queried stations + last stop (train destination)
+                    trimmed = []
+                    for idx, stop in enumerate(all_stops):
+                        stop_lower = stop.lower()
+                        is_first  = (idx == 0)
+                        is_last   = (idx == len(all_stops) - 1)
+                        is_target = any(term in stop_lower for term in all_station_terms)
+
+                        if is_first or is_last or is_target:
+                            trimmed.append(stop)
+
+                    if not trimmed:
+                        continue  # nothing matched — leave doc unchanged
+
+                    # Rebuild doc: header + trimmed stops (using " > " for readability)
+                    trimmed_content = (
+                        header
+                        + f"Stops ({len(all_stops)} total, key stops shown): "
+                        + " > ".join(trimmed)
+                    )
+                    logger.debug(
+                        f"[TRIM] {doc.metadata.get('train_no', '?')}: "
+                        f"{len(all_stops)} stops → {len(trimmed)} stops "
+                        f"({len(content)} → {len(trimmed_content)} chars)"
+                    )
+                    doc.page_content = trimmed_content
 
         # Expand limit when station or train number detected to avoid truncation
         limit = 25 if (station_info or train_number_detected) else self.top_k

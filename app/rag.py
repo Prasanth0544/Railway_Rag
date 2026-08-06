@@ -167,34 +167,51 @@ RESPONSE LENGTH
 ==========================
 
 • Live status / PNR / Yes-No     → Concise (2–4 sentences). Include all key fields.
-• Schedule / stops / route       → Complete. NEVER truncate. List ALL stops in order.
+• Full schedule ("stops of 12727") → Complete. NEVER truncate. List ALL stops in order.
 • Rule / policy queries          → Full rule text. Never summarize. Quote accurately.
-• Route queries (A to B trains)  → List EVERY qualifying train. Never say "no trains" if data exists.
+• Route queries (A to B trains)  → Context is pre-trimmed to key stops per train.
+                                   List EVERY qualifying train. Never say "no trains" if data exists.
 
 ==========================
 ROUTE QUERIES — CRITICAL
 ==========================
 
-If user asks for trains between Station A and Station B:
+If user asks for trains between Station A (FROM) and Station B (TO):
 1. Scan ALL retrieved route documents — do not stop at first match.
-2. A train qualifies if BOTH stations appear in its route (in any position).
-   Travel direction: Station A must appear BEFORE Station B in sequence.
-3. List EVERY qualifying train with:
+2. The context you receive is PRE-TRIMMED — each train doc shows only:
+   • Train origin (where the train starts)
+   • Station A — the user's boarding point (with departure time if available)
+   • Station B — the user's alighting point (with arrival time if available)
+   • Train destination (where the train ends)
+   Intermediate stops between A and B are intentionally omitted.
+3. A train qualifies if BOTH Station A and Station B appear in its trimmed doc.
+   Travel direction: Station A must appear BEFORE Station B in the sequence.
+4. List EVERY qualifying train with:
    • Train number and name
-   • Departure from A, Arrival at B
-   • Running days
-   • Travel duration
-   • Available classes
-4. NEVER say "no direct trains" if any qualifying train exists in context.
+   • Running days (e.g. "Daily", "Mon only", "Mon Wed Fri") — ALWAYS include this
+   • Departure from A, Arrival at B (from the trimmed context)
+   • Train origin and final destination (for full journey context)
+   • Available classes (if present in doc)
+5. Sort trains: list Daily trains FIRST, then weekly/occasional trains.
+   Label seasonal/special trains clearly: "(Seasonal — verify on NTES before travel)"
+6. NEVER say "no direct trains" if any qualifying train exists in context.
+7. Do NOT ask for more stops — the trimmed context is intentional and sufficient.
 
 ==========================
-SCHEDULE / STOP QUERIES
+SCHEDULE / STOP QUERIES (Specific Train Number)
 ==========================
 
-• Return EVERY station in correct order.
+When user asks for the full schedule/stops of a SPECIFIC train (e.g. "stops of 12727"):
+• Return EVERY station in correct order — these docs are NOT trimmed.
 • Include arrival time, departure time, halt duration at each stop.
-• Do NOT skip or truncate intermediate stations.
+• Do NOT skip or truncate any stations.
 • State the day offset if a train runs overnight: "Day 2" for next-day arrivals.
+• CRITICAL: Station names MUST come from the retrieved context only.
+  Do NOT use your own training-data knowledge to fill in station names.
+  If a stop shows only a code (e.g. "NRT"), write it as "NRT" — do NOT
+  guess or invent a city name. The retrieved station docs will have the
+  correct name (e.g. "Station NRT — Narasaraopet") — use that.
+
 
 ==========================
 LIVE STATUS — HONESTY RULES
@@ -385,14 +402,43 @@ class RAGChain:
         # Step 1: Retrieve
         docs = self.retriever.retrieve(question)
 
-        # Step 2: Format context
+        # Step 2: Confidence Check (ChatGPT suggestion — implemented)
+        # If this is a 2-station route query and zero route docs came back,
+        # return a deterministic response instead of sending empty context to Gemini.
+        # Prevents hallucinations like "no direct trains... however 17263 operates..."
+        route_docs = [d for d in docs if d.metadata.get("source_type") == "train_route"]
+        resolved   = getattr(self.retriever, "_last_all_stations", None)
+
+        if not route_docs and resolved and len(resolved) >= 2:
+            from_name = resolved[0][0]   # canonical name
+            to_name   = resolved[1][0]
+            from_code = resolved[0][1]
+            to_code   = resolved[1][1]
+            answer = (
+                f"No direct trains were found from **{from_name} ({from_code})** "
+                f"to **{to_name} ({to_code})** in the available route data.\n\n"
+                f"This could mean:\n"
+                f"- No train connects these stations directly\n"
+                f"- These stations are served by connecting routes\n"
+                f"- The data may not include all services\n\n"
+                f"Please verify on [NTES](https://enquiry.indianrail.gov.in) or the IRCTC app."
+            )
+            logger.info(f"[CONFIDENCE] Zero route docs for {from_code}→{to_code} — short-circuit, no LLM call")
+            return {
+                "question"               : question,
+                "answer"                 : answer,
+                "sources"                : [],
+                "num_documents_retrieved": len(docs),
+            }
+
+        # Step 3: Format context
         context = format_docs(docs)
 
-        # Step 3: Generate answer
+        # Step 4: Generate answer
         chain  = self.prompt | self.llm | self.parser
         answer = chain.invoke({"context": context, "question": question})
 
-        # Step 4: Extract sources
+        # Step 5: Extract sources
         sources = get_sources(docs)
 
         return {
@@ -401,6 +447,7 @@ class RAGChain:
             "sources"                : sources,
             "num_documents_retrieved": len(docs),
         }
+
 
 
 # ─────────────────────────────────────────────
