@@ -132,10 +132,11 @@ def _validate_answer(answer: str, context: str, train_no: str | None) -> list[st
     """Flag potential hallucinations in the generated answer."""
     warnings = []
     # Check if answer mentions train numbers not present in context
-    answer_trains = set(_re.findall(r'\b(\d{5})\b', answer))
-    context_trains = set(_re.findall(r'\b(\d{5})\b', context))
+    # Normalize: strip leading zeros so "07201" matches "7201"
+    answer_trains  = set(str(int(t)) for t in _re.findall(r'\b(0?\d{4,5})\b', answer)  if t.isdigit() and int(t) > 0)
+    context_trains = set(str(int(t)) for t in _re.findall(r'\b(0?\d{4,5})\b', context) if t.isdigit() and int(t) > 0)
     if train_no:
-        context_trains.add(train_no)
+        context_trains.add(str(int(train_no)) if train_no.isdigit() else train_no)
     for t in answer_trains:
         if t not in context_trains:
             warnings.append(f"⚠️ Answer mentions train {t} which was not found in retrieved context — possible hallucination.")

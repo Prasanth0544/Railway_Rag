@@ -24,6 +24,11 @@ _pnr_cache: Dict[str, Dict[str, Any]] = {}
 # HTTP timeout: 15s connect, 25s read
 REQUEST_TIMEOUT = (15, 25)
 
+# RapidAPI config (same key as ntes_client — works for all subscribed APIs)
+RAPIDAPI_KEY          = os.getenv("RAPIDAPI_KEY", "").strip()
+RAPIDAPI_PNR_HOST     = "irctc-railway-api.p.rapidapi.com"
+RAPIDAPI_PNR_ENDPOINT = f"https://{RAPIDAPI_PNR_HOST}/pnr-status.php"
+
 # Rotate user-agents to reduce cloud IP detection / rate limiting
 import random
 _USER_AGENTS = [
@@ -48,7 +53,13 @@ HEADERS = _get_headers()  # default fallback
 def get_pnr_status(pnr: str) -> dict:
     """
     Get live PNR status.
-    Uses memory cache before querying live endpoints.
+    Priority order:
+      1. Cache (10 min TTL)
+      2. RapidAPI IRCTC Railway — reliable from cloud (if RAPIDAPI_KEY set)
+      3. ConfirmTkt JSON API
+      4. erail.in JSON API
+      5. IRCTC official endpoint
+      6. RailYatri HTML scraper (last resort)
     """
     pnr = str(pnr).strip()
     if not re.match(r"^\d{10}$", pnr):
@@ -60,30 +71,37 @@ def get_pnr_status(pnr: str) -> dict:
             "from_cache": False
         }
 
-    # Check cache
+    # 1. Cache
     cached = _get_from_cache(pnr)
     if cached:
         return cached
 
-    # 1. Try ConfirmTkt JSON API (fastest)
+    # 2. RapidAPI IRCTC Railway (cloud-friendly, works from Render)
+    if RAPIDAPI_KEY:
+        result = _fetch_rapidapi_pnr(pnr)
+        if result and result.get("success"):
+            _set_cache(pnr, result)
+            return result
+
+    # 3. ConfirmTkt JSON API
     result = _fetch_confirmtkt(pnr)
     if result and result.get("success"):
         _set_cache(pnr, result)
         return result
 
-    # 2. Try erail.in JSON API
+    # 4. erail.in JSON API
     result = _fetch_erail_pnr(pnr)
     if result and result.get("success"):
         _set_cache(pnr, result)
         return result
 
-    # 3. Try IRCTC official endpoint
+    # 5. IRCTC official endpoint
     result = _fetch_irctc_pnr(pnr)
     if result and result.get("success"):
         _set_cache(pnr, result)
         return result
 
-    # 4. Try RailYatri HTML scraper (last resort)
+    # 6. RailYatri HTML scraper (last resort)
     result = _fetch_railyatri_scraper(pnr)
     if result and result.get("success"):
         _set_cache(pnr, result)
@@ -119,6 +137,65 @@ def _set_cache(pnr: str, data: dict):
         "fetched_at": now,
         "expires_at": now + timedelta(seconds=CACHE_TTL_SECONDS)
     }
+
+
+def _fetch_rapidapi_pnr(pnr: str) -> Optional[dict]:
+    """Fetch PNR status from RapidAPI IRCTC Railway API.
+    Host: irctc-railway-api.p.rapidapi.com
+    Endpoint: POST /pnr-status.php
+    Same RAPIDAPI_KEY as live train status — no extra subscription needed.
+    """
+    if not RAPIDAPI_KEY:
+        return None
+    try:
+        resp = requests.post(
+            RAPIDAPI_PNR_ENDPOINT,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "x-rapidapi-host": RAPIDAPI_PNR_HOST,
+                "x-rapidapi-key": RAPIDAPI_KEY,
+            },
+            data={"pnr": pnr},
+            timeout=REQUEST_TIMEOUT,
+        )
+        logger.info(f"[PNR] RapidAPI IRCTC -> HTTP {resp.status_code}")
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        if not data or not data.get("success"):
+            logger.info(f"[PNR] RapidAPI IRCTC returned success=false: {data.get('message', '')}")
+            return None
+
+        body = data.get("data", data)  # some responses wrap in 'data'
+        passengers = []
+        for idx, p in enumerate(body.get("passengerList") or body.get("passengers") or []):
+            passengers.append({
+                "passenger_no": idx + 1,
+                "booking_status": p.get("bookingStatus") or p.get("BookingStatus", ""),
+                "current_status": p.get("currentStatus") or p.get("CurrentStatus", ""),
+                "coach": p.get("coachId") or p.get("coach", ""),
+                "berth": p.get("seatNo") or p.get("berth", 0),
+            })
+
+        return {
+            "success": True,
+            "source": "RapidAPI",
+            "pnr": pnr,
+            "train_no": str(body.get("trainNumber") or body.get("train_no", "")),
+            "train_name": body.get("trainName") or body.get("train_name", ""),
+            "date_of_journey": body.get("dateOfJourney") or body.get("doj", ""),
+            "booking_class": body.get("journeyClass") or body.get("class", ""),
+            "from_station": body.get("from") or body.get("boardingStation", ""),
+            "to_station": body.get("to") or body.get("destinationStation", ""),
+            "boarding_station": body.get("boardingStation") or body.get("from", ""),
+            "chart_prepared": body.get("chartPrepared", False),
+            "passengers": passengers,
+            "fetched_at": datetime.now().isoformat(),
+            "from_cache": False,
+        }
+    except Exception as e:
+        logger.info(f"[PNR] RapidAPI IRCTC error: {e}")
+    return None
 
 
 def _fetch_confirmtkt(pnr: str) -> Optional[dict]:
