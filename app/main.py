@@ -74,7 +74,7 @@ class AnswerResponse(BaseModel):
     response_time_ms: float = 0.0
     avg_relevance_score: float = 0.0
     llm_model: str = ""
-    embedding_model: str = "all-MiniLM-L6-v2"
+    embedding_model: str = "all-MiniLM-L6-v2" if os.getenv("USE_LOCAL_EMBEDDINGS","false").lower()=="true" else "gemini-embedding-001"
 
 
 class HealthResponse(BaseModel):
@@ -83,7 +83,7 @@ class HealthResponse(BaseModel):
     version: str
     llm_provider: str = ""
     llm_model: str = ""
-    embedding_model: str = "all-MiniLM-L6-v2"
+    embedding_model: str = "all-MiniLM-L6-v2" if os.getenv("USE_LOCAL_EMBEDDINGS","false").lower()=="true" else "gemini-embedding-001"
     vector_db: str = "ChromaDB"
     total_documents: int = 0
     collections: dict = {}
@@ -333,14 +333,48 @@ async def root():
     )
 
 
-@app.get("/health", response_model=HealthResponse, tags=["Health"])
+@app.get("/health", tags=["Health"])
 async def health():
     """Health check endpoint — called by the web UI on load."""
-    return HealthResponse(
-        status="ok",
-        message="Railway RAG Assistant is running! Use POST /ask to query.",
-        version="1.0.0",
-    )
+    import chromadb as _chromadb
+    _chroma_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "chroma_db")
+    _cols: dict = {}
+    _total: int = 0
+    _client = None
+    # Use existing retriever client first (avoid double-open conflicts)
+    if rag_chain is not None:
+        try:
+            _client = rag_chain.retriever.client
+        except Exception:
+            pass
+    if _client is None and os.path.exists(_chroma_dir):
+        try:
+            _client = _chromadb.PersistentClient(path=_chroma_dir)
+        except Exception:
+            pass
+    if _client is not None:
+        try:
+            for _c in _client.list_collections():
+                _n = _client.get_collection(_c.name).count()
+                _cols[_c.name] = _n
+                _total += _n
+        except Exception:
+            pass
+    _use_local = os.getenv("USE_LOCAL_EMBEDDINGS", "false").strip().lower() == "true"
+    _embed     = "all-MiniLM-L6-v2" if _use_local else "gemini-embedding-001"
+    _provider  = os.getenv("LLM_PROVIDER", "gemini")
+    _model     = os.getenv("LOCAL_MODEL_NAME", "") if _provider == "lmstudio" else os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
+    return {
+        "status": "ok",
+        "message": f"LLM: {_provider.upper()} | {_total} docs across {len(_cols)} collections",
+        "version": "1.0.0",
+        "llm_provider": _provider.upper(),
+        "llm_model": _model,
+        "embedding_model": _embed,
+        "vector_db": "ChromaDB",
+        "total_documents": _total,
+        "collections": _cols,
+    }
 
 
 @app.post("/ask", response_model=AnswerResponse, tags=["RAG"])
@@ -380,7 +414,7 @@ async def ask_question(request: QuestionRequest):
             response_time_ms=elapsed_ms,
             avg_relevance_score=avg_score,
             llm_model=os.getenv("GEMINI_MODEL", os.getenv("LOCAL_MODEL_NAME", "gemini-3.1-flash-lite")),
-            embedding_model="all-MiniLM-L6-v2",
+            embedding_model="all-MiniLM-L6-v2" if os.getenv("USE_LOCAL_EMBEDDINGS","false").lower()=="true" else "gemini-embedding-001" if os.getenv("USE_LOCAL_EMBEDDINGS","false").lower()=="true" else "gemini-embedding-001",
         )
     except Exception as e:
         raise HTTPException(
@@ -422,7 +456,7 @@ async def ask_question_stream(request: QuestionRequest):
                 "avg_relevance_score": avg_score,
                 "sources": sources,
                 "llm_model": os.getenv("GEMINI_MODEL", os.getenv("LOCAL_MODEL_NAME", "gemini-3.1-flash-lite")),
-                "embedding_model": "all-MiniLM-L6-v2",
+                "embedding_model": "all-MiniLM-L6-v2" if os.getenv("USE_LOCAL_EMBEDDINGS","false").lower()=="true" else "gemini-embedding-001",
             }
             yield f"data: {json.dumps(meta)}\n\n"
 
@@ -526,7 +560,7 @@ async def ask_question_smart(request: QuestionRequest, raw_request: Request):
                     "sources": [],
                     "warnings": [],
                     "llm_model": os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"),
-                    "embedding_model": "all-MiniLM-L6-v2",
+                    "embedding_model": "all-MiniLM-L6-v2" if os.getenv("USE_LOCAL_EMBEDDINGS","false").lower()=="true" else "gemini-embedding-001",
                 }
                 yield f"data: {json.dumps(meta)}\n\n"
 
@@ -658,7 +692,7 @@ async def ask_question_smart(request: QuestionRequest, raw_request: Request):
                 "sources": sources,
                 "warnings": warnings,
                 "llm_model": os.getenv("GEMINI_MODEL" if os.getenv("LLM_PROVIDER") == "gemini" else "LOCAL_MODEL_NAME", "gemini-2.5-flash"),
-                "embedding_model": "all-MiniLM-L6-v2",
+                "embedding_model": "all-MiniLM-L6-v2" if os.getenv("USE_LOCAL_EMBEDDINGS","false").lower()=="true" else "gemini-embedding-001" if os.getenv("USE_LOCAL_EMBEDDINGS", "false").lower() == "true" else "gemini-embedding-001",
             }
             yield f"data: {json.dumps(meta)}\n\n"
 
@@ -874,7 +908,7 @@ async def ask_with_file(
                 "response_time_ms": elapsed_ms,
                 "avg_relevance_score": 0.0,
                 "llm_model": model_name,
-                "embedding_model": "all-MiniLM-L6-v2",
+                "embedding_model": "all-MiniLM-L6-v2" if os.getenv("USE_LOCAL_EMBEDDINGS","false").lower()=="true" else "gemini-embedding-001",
                 "file_name": file.filename,
                 "file_type": content_type,
                 "mode": "multi-modal",
@@ -941,7 +975,7 @@ async def ask_with_file(
             "response_time_ms": elapsed_ms,
             "avg_relevance_score": avg_score,
             "llm_model": model_name,
-            "embedding_model": "all-MiniLM-L6-v2",
+            "embedding_model": "all-MiniLM-L6-v2" if os.getenv("USE_LOCAL_EMBEDDINGS","false").lower()=="true" else "gemini-embedding-001",
             "file_name": file.filename,
             "file_type": content_type,
             "mode": "multi-modal",
@@ -1036,40 +1070,6 @@ async def get_station(station_code: str):
     return matching[0]
 
 
-@app.get("/health", response_model=HealthResponse, tags=["Health"])
-async def health_check():
-    """Detailed health check — shows LLM provider, model info, and collection stats."""
-    import chromadb
-    chroma_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "chroma_db")
-    collections_detail = {}
-    total_docs = 0
-
-    if os.path.exists(chroma_dir):
-        try:
-            client = chromadb.PersistentClient(path=chroma_dir)
-            for c in client.list_collections():
-                count = client.get_collection(c.name).count()
-                collections_detail[c.name] = count
-                total_docs += count
-        except Exception:
-            pass
-
-    provider   = os.getenv("LLM_PROVIDER", "gemini")
-    llm_model  = os.getenv("LOCAL_MODEL_NAME", "gemini-3.1-flash-lite") if provider == "lmstudio" else os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
-    col_summary = [f"{k} ({v} docs)" for k, v in collections_detail.items()]
-    status_msg  = f"LLM: {provider.upper()} | ChromaDB collections: {col_summary or 'none — run create_embeddings.py'}"
-
-    return HealthResponse(
-        status="ok",
-        message=status_msg,
-        version="1.0.0",
-        llm_provider=provider.upper(),
-        llm_model=llm_model,
-        embedding_model="all-MiniLM-L6-v2 (sentence-transformers)",
-        vector_db="ChromaDB",
-        total_documents=total_docs,
-        collections=collections_detail,
-    )
 
 
 # ── Admin Stats Endpoint (Phase 5B) ────────────────────────
