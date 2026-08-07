@@ -581,8 +581,11 @@ async def ask_question_smart(request: QuestionRequest, raw_request: Request):
                 if train_no:
                     # Enrich intent details
                     intent_res["train_no"] = train_no
-                    if intent == "STATIC" and "stops" in question.lower() or "route" in question.lower() or "schedule" in question.lower():
-                        # If asking about stops/route/schedule dynamically, upgrade to HYBRID to include both details
+                    # Only upgrade to HYBRID if truly ambiguous (not if it's a clear schedule query)
+                    intent_category = intent_res.get("intent_category", "")
+                    if (intent == "STATIC"
+                            and intent_category not in ("SCHEDULE_QUERY", "BETWEEN_STATIONS", "STATION_INFO", "COACH_QUERY")
+                            and ("stops" in question.lower() or "route" in question.lower() or "schedule" in question.lower())):
                         intent = "HYBRID"
 
             # If a train number was explicitly matched or resolved, save it to session
