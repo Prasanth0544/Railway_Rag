@@ -312,32 +312,156 @@ def get_llm():
         )
 
 
-# Max context characters to send to LLM (~3000 tokens)
-# Prevents context overflow on broad queries with many retrieved docs
-MAX_CONTEXT_CHARS = 12000
+import re as _re
 
-def format_docs(docs: list[Document]) -> str:
-    """Format retrieved documents into a context string for the LLM prompt.
-    Respects MAX_CONTEXT_CHARS budget — stops adding docs when budget exceeded."""
+# ─────────────────────────────────────────────────────────────────
+# SMART CONTEXT BUILDER
+# Query-type-aware document formatter.
+# Sends only what Gemini needs per query type — no more, no less.
+# ─────────────────────────────────────────────────────────────────
+
+# Per-strategy character budgets
+_BUDGET = {
+    "train_number":  5_000,   # 1-2 exact route docs for that train
+    "route_search":  6_000,   # 5-10 compact route docs (multi-train)
+    "rules_refund":  8_000,   # 2-3 full rules docs (never truncate mid-rule)
+    "station_info":  2_000,   # 1 station doc
+    "class_amenity": 5_000,   # 1-2 train + rules docs
+    "default":      12_000,   # fallback — original behaviour
+}
+
+_RULES_KEYWORDS = frozenset([
+    "cancel", "cancellation", "refund", "charges", "charge", "fine",
+    "penalty", "luggage", "luggage limit", "allowance", "tte", "duty",
+    "duties", "rule", "rules", "tatkal", "rac", "gnwl", "pqwl", "ckwl",
+    "rswl", "wl", "waitlist", "waiting list", "tdr", "policy", "policies",
+    "concession", "senior citizen", "divyaang", "handicapped", "quota",
+    "premium tatkal", "booking", "chain pull", "without ticket",
+    "boarding", "berth change", "food", "catering", "e-catering",
+])
+
+_STATION_KEYWORDS = frozenset([
+    "station code", "station info", "which zone", "which division",
+    "how many platforms", "retiring room", "cloak room", "station master",
+    "trains arriving at", "live station", "which station is",
+])
+
+_CLASS_KEYWORDS = frozenset([
+    "which class", "classes available", "class in", "difference between",
+    "sleeper vs", "2a vs", "3a vs", "cc class", "ec class", "pantry car",
+    "amenities", "vande bharat", "humsafar", "amrit bharat", "rajdhani class",
+    "how many berths", "coach layout", "superfast vs", "express vs",
+])
+
+
+def _build_context(docs: list[Document], max_chars: int) -> str:
+    """
+    Build context string from docs, respecting max_chars budget.
+    Unlike the old approach (stop at first overflow), this version
+    tries to fit smaller docs even after skipping a large one.
+    """
+    parts = []
+    total = 0
+    skipped = 0
+
+    for i, doc in enumerate(docs, 1):
+        content = doc.page_content
+        content_len = len(content)
+        if total + content_len > max_chars and parts:
+            skipped += 1
+            continue  # try next — it might be smaller and fit
+        total += content_len
+        collection = doc.metadata.get("collection", "unknown")
+        score      = doc.metadata.get("relevance_score", "N/A")
+        parts.append(f"[Doc {i} | {collection} | score: {score}]\n{content}")
+
+    if skipped:
+        logger.debug(f"[BUILD_CTX] {total} chars used / {max_chars} budget — {skipped} docs skipped")
+
+    return "\n\n---\n\n".join(parts) if parts else "No relevant documents found."
+
+
+def smart_format_docs(
+    docs: list[Document],
+    query: str = "",
+    intent: str = "STATIC",
+) -> str:
+    """
+    Build LLM context intelligently based on query type.
+
+    Strategy matrix:
+      1. train_number  → exact train docs only          (budget: 5,000 chars)
+      2. rules_refund  → rules + references docs only   (budget: 8,000 chars)
+      3. station_info  → station docs only              (budget: 2,000 chars)
+      4. class_amenity → train + rules docs             (budget: 5,000 chars)
+      5. route_search  → train_route + train docs only  (budget: 6,000 chars)
+      6. default       → original flat budget           (budget: 12,000 chars)
+    """
     if not docs:
         return "No relevant documents found."
 
-    parts = []
-    total_chars = 0
-    for i, doc in enumerate(docs, 1):
-        content = doc.page_content
-        # Stop adding docs when budget is exceeded (keep at least 1 doc)
-        if total_chars + len(content) > MAX_CONTEXT_CHARS and parts:
-            logger.debug(f"[BUDGET] Context budget hit at doc {i}/{len(docs)} ({total_chars} chars). Remaining docs skipped.")
-            break
-        total_chars += len(content)
-        collection = doc.metadata.get("collection", "unknown")
-        score      = doc.metadata.get("relevance_score", "N/A")
-        parts.append(
-            f"[Doc {i} | {collection} | relevance: {score}]\n{content}"
-        )
+    # LIVE and PNR answered by external APIs — no ChromaDB context needed
+    if intent in ("LIVE", "PNR"):
+        return ""
 
-    return "\n\n---\n\n".join(parts)
+    q = query.lower()
+
+    # Strategy 1: Specific train number query ("stops of 12727", "12727 schedule")
+    train_no_match = _re.search(r'\b(\d{5})\b', query)
+    if train_no_match:
+        num = train_no_match.group(1)
+        relevant = [d for d in docs if d.metadata.get("train_no") == num]
+        if not relevant:
+            relevant = docs[:3]
+        logger.debug(f"[SMART_CTX] Strategy=train_number train={num} docs={len(relevant)}")
+        return _build_context(relevant, _BUDGET["train_number"])
+
+    # Strategy 2: Rules / Refund / Policy query
+    if any(kw in q for kw in _RULES_KEYWORDS):
+        rules_docs = [d for d in docs if d.metadata.get("source_type") in ("rule", "reference")]
+        if not rules_docs:
+            rules_docs = docs
+        logger.debug(f"[SMART_CTX] Strategy=rules_refund docs={len(rules_docs)}")
+        return _build_context(rules_docs[:4], _BUDGET["rules_refund"])
+
+    # Strategy 3: Station info query
+    if any(kw in q for kw in _STATION_KEYWORDS):
+        station_docs = [d for d in docs if d.metadata.get("source_type") == "station"]
+        if not station_docs:
+            station_docs = docs[:2]
+        logger.debug(f"[SMART_CTX] Strategy=station_info docs={len(station_docs)}")
+        return _build_context(station_docs[:2], _BUDGET["station_info"])
+
+    # Strategy 4: Train class / amenity query
+    if any(kw in q for kw in _CLASS_KEYWORDS):
+        class_docs = [d for d in docs if d.metadata.get("source_type") in ("train", "rule", "reference")]
+        if not class_docs:
+            class_docs = docs
+        logger.debug(f"[SMART_CTX] Strategy=class_amenity docs={len(class_docs)}")
+        return _build_context(class_docs[:4], _BUDGET["class_amenity"])
+
+    # Strategy 5: Route search — two+ stations or route keywords
+    has_route_kw = any(kw in q for kw in [
+        "trains from", "trains between", "trains via", "which trains",
+        "train from", "train between", "express from", "go from",
+        "travel from", "train to", "go to",
+    ])
+    station_codes = _re.findall(r'\b[A-Z]{2,4}\b', query)
+    if len(station_codes) >= 2 or has_route_kw:
+        route_docs = [d for d in docs if d.metadata.get("source_type") in ("train_route", "train")]
+        if not route_docs:
+            route_docs = docs
+        logger.debug(f"[SMART_CTX] Strategy=route_search docs={len(route_docs)}")
+        return _build_context(route_docs, _BUDGET["route_search"])
+
+    # Strategy 6: Default
+    logger.debug(f"[SMART_CTX] Strategy=default docs={len(docs)}")
+    return _build_context(docs, _BUDGET["default"])
+
+
+def format_docs(docs: list[Document]) -> str:
+    """Backward-compatible wrapper — use smart_format_docs() for new endpoints."""
+    return _build_context(docs, _BUDGET["default"])
 
 
 
@@ -399,18 +523,20 @@ class RAGChain:
           3. Send to LLM with prompt
           4. Return structured response with sources
         """
-        # Step 1: Retrieve
-        docs = self.retriever.retrieve(question)
+        import time
+        t0 = time.time()
 
-        # Step 2: Confidence Check (ChatGPT suggestion — implemented)
-        # If this is a 2-station route query and zero route docs came back,
-        # return a deterministic response instead of sending empty context to Gemini.
-        # Prevents hallucinations like "no direct trains... however 17263 operates..."
+        # Step 1: Retrieve (includes Gemini embedding API call)
+        docs = self.retriever.retrieve(question)
+        t1 = time.time()
+        logger.info(f"[TIMING] Retrieval (embed+search): {t1-t0:.2f}s  ({len(docs)} docs)")
+
+        # Step 2: Confidence Check
         route_docs = [d for d in docs if d.metadata.get("source_type") == "train_route"]
         resolved   = getattr(self.retriever, "_last_all_stations", None)
 
         if not route_docs and resolved and len(resolved) >= 2:
-            from_name = resolved[0][0]   # canonical name
+            from_name = resolved[0][0]
             to_name   = resolved[1][0]
             from_code = resolved[0][1]
             to_code   = resolved[1][1]
@@ -431,12 +557,17 @@ class RAGChain:
                 "num_documents_retrieved": len(docs),
             }
 
-        # Step 3: Format context
-        context = format_docs(docs)
+        # Step 3: Format context (smart, query-type-aware)
+        context = smart_format_docs(docs, query=question, intent="STATIC")
+        t2 = time.time()
+        logger.info(f"[TIMING] Context format: {t2-t1:.2f}s  ({len(context)} chars)")
 
-        # Step 4: Generate answer
+        # Step 4: Generate answer (Gemini LLM call)
         chain  = self.prompt | self.llm | self.parser
         answer = chain.invoke({"context": context, "question": question})
+        t3 = time.time()
+        logger.info(f"[TIMING] LLM generation: {t3-t2:.2f}s")
+        logger.info(f"[TIMING] TOTAL: {t3-t0:.2f}s")
 
         # Step 5: Extract sources
         sources = get_sources(docs)

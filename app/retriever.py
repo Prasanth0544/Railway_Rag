@@ -486,20 +486,34 @@ class UnifiedRetriever:
                 continue  # drop silently — doesn't serve this route
 
             # Check 2: Correct direction (FROM before TO in stop sequence)
-            if "Stops" in doc.page_content:
-                try:
-                    stops_raw = doc.page_content.split("Stops")[1]
-                    stops = [s.strip().lower() for s in stops_raw.split(">")]
-                    fi = next((i for i, s in enumerate(stops) if from_canon in s or from_code in s), -1)
-                    ti = next((i for i, s in enumerate(stops) if to_canon   in s or to_code   in s), -1)
+            # Direction check — handles both doc formats:
+            #   New (time-based): "Header\nVSKP dep 17:20 | BZA arr 23:15 | HYB arr 06:15 [last]."
+            #   Old (stop-codes): "Stops (N): VSKP > DVD > BZA > HYB"
+            try:
+                _content = doc.page_content
+                _stops: list[str] = []
+                if "\n" in _content and "|" in _content:
+                    # New format: extract first token (station code) from each pipe segment
+                    _sched = _content.split("\n", 1)[1]
+                    _stops = [seg.strip().split()[0].lower()
+                              for seg in _sched.split("|")
+                              if seg.strip() and seg.strip().split()]
+                elif "Stops" in _content:
+                    # Old format: split stop sequence by >
+                    _stops = [s.strip().lower()
+                              for s in _content.split("Stops")[1].split(">")]
+
+                if _stops:
+                    fi = next((i for i, s in enumerate(_stops) if from_canon in s or from_code in s), -1)
+                    ti = next((i for i, s in enumerate(_stops) if to_canon   in s or to_code   in s), -1)
                     if fi >= 0 and ti >= 0 and fi >= ti:
                         logger.debug(
                             f"[DIR] Dropped wrong-direction {doc.metadata.get('train_no','?')}: "
                             f"{from_code}@{fi} >= {to_code}@{ti}"
                         )
                         continue  # wrong direction
-                except Exception:
-                    pass  # parsing failed — keep doc to be safe
+            except Exception:
+                pass  # parsing failed — keep doc to be safe
 
             valid_routes.append(doc)
 
@@ -570,7 +584,7 @@ class UnifiedRetriever:
 
         return valid_routes, other_docs
 
-    def retrieve(self, query: str) -> list[Document]:
+    def retrieve(self, query: str, intent_category: str = "") -> list[Document]:
 
         """
         Search relevant collections and return the top-k most relevant
@@ -578,6 +592,12 @@ class UnifiedRetriever:
 
         Uses fuzzy station query rewriting, keyword substring search (hybrid search),
         intent-based collection filtering, and threshold filtering.
+
+        Args:
+            query:           The user's question string.
+            intent_category: Fine-grained intent from intent.py (e.g. BETWEEN_STATIONS,
+                             CANCELLATION_RULES). When provided, overrides keyword-based
+                             collection routing in Step 3.
         """
         if not self.vector_stores:
             return []
@@ -650,16 +670,31 @@ class UnifiedRetriever:
         # --- Step 3: Intent-Based Collection Filtering (Metadata Routing) ---
         query_lower = query.lower()
         active_collections = list(self.vector_stores.keys())
-        
-        transit_keywords = ["stop", "stops", "route", "timings", "timetable", "departure", "arrive", "arrival", "halt", "pass through", "runs from"]
-        rules_keywords = ["cancel", "cancellation", "refund", "luggage", "penalty", "fine", "tte", "rule", "duty", "duties", "allowance", "charge", "charges", "fee"]
-        
-        if any(kw in query_lower for kw in transit_keywords):
-            active_collections = [c for c in active_collections if c in ("train_routes", "stations", "trains")]
-            logger.debug(f"[INTENT] Routing to transit collections: {active_collections}")
-        elif any(kw in query_lower for kw in rules_keywords):
-            active_collections = [c for c in active_collections if c in ("railway_rules", "references")]
-            logger.debug(f"[INTENT] Routing to rules/references collections: {active_collections}")
+
+        # Priority 1: Use fine-grained intent_category from intent.py (smarter)
+        _CATEGORY_TO_COLS: dict[str, list[str]] = {
+            "BETWEEN_STATIONS":   ["train_routes"],
+            "SCHEDULE_QUERY":     ["train_routes", "trains"],
+            "STATION_INFO":       ["stations"],
+            "COACH_QUERY":        ["trains", "railway_rules"],
+            "CANCELLATION_RULES": ["railway_rules", "references"],
+            "GENERAL_INFO":       ["railway_rules", "references", "trains"],
+        }
+        if intent_category and intent_category in _CATEGORY_TO_COLS:
+            wanted = _CATEGORY_TO_COLS[intent_category]
+            active_collections = [c for c in wanted if c in self.vector_stores]
+            logger.debug(f"[INTENT-CAT] {intent_category} → collections: {active_collections}")
+
+        # Priority 2: Keyword-based fallback (when intent_category not provided)
+        elif not intent_category:
+            transit_keywords = ["stop", "stops", "route", "timings", "timetable", "departure", "arrive", "arrival", "halt", "pass through", "runs from"]
+            rules_keywords   = ["cancel", "cancellation", "refund", "luggage", "penalty", "fine", "tte", "rule", "duty", "duties", "allowance", "charge", "charges", "fee"]
+            if any(kw in query_lower for kw in transit_keywords):
+                active_collections = [c for c in active_collections if c in ("train_routes", "stations", "trains")]
+                logger.debug(f"[INTENT-KW] Transit → collections: {active_collections}")
+            elif any(kw in query_lower for kw in rules_keywords):
+                active_collections = [c for c in active_collections if c in ("railway_rules", "references")]
+                logger.debug(f"[INTENT-KW] Rules → collections: {active_collections}")
 
         # --- Step 4: Hybrid Keyword Contains Matching for ALL resolved stations ---
         keyword_docs: list[Document] = []
@@ -794,64 +829,87 @@ class UnifiedRetriever:
             deduped_docs = filtered
 
         # --- Step 7: Trim Route Schedules to key stops only ---
-        # Trims each train_route doc to: train origin + queried stations + train destination.
-        # Only applies to station-based queries (not specific train number lookups).
-        # Fixes: old code looked for "Schedule:" (never present) and split by "|" (wrong).
-        #        Actual DB format: "Train X from A to B. Stops (N): A > B > C > D"
+        # Handles BOTH doc formats:
+        #   New (time-based): "Header\nVSKP dep 17:20 | BZA arr 23:15 dep 23:30 (15min) | HYB arr 06:15 [last]."
+        #   Old (stop-codes): "Train X. Stops (N): VSKP > DVD > BZA > HYB. Distance: Y km."
+        # Keeps: first segment (origin) + segments matching queried stations + last segment (destination)
         if all_stations and not train_number_detected:
-            # Build set of all queried station terms (codes + canonical names)
             all_station_terms = set()
             for canon, code in all_stations:
                 all_station_terms.add(canon.lower())
                 all_station_terms.add(code.lower())
 
             for doc in deduped_docs:
-                if doc.metadata.get("source_type") == "train_route":
-                    content = doc.page_content
+                if doc.metadata.get("source_type") != "train_route":
+                    continue
+                content = doc.page_content
 
-                    # Match actual DB format: "Stops (N): A > B > C"
-                    # Also handles "Stops:" without count
-                    if "Stops" not in content:
-                        continue  # can't trim — leave doc as-is
+                if "\n" in content and "|" in content:
+                    # ── New time-based format ────────────────────────────────
+                    # "Train 12727 — SF Express (Daily). From VSKP to HYB. 21 stops, 707 km.\n"
+                    # "VSKP dep 17:20 | DVD arr 17:45 dep 17:47 (2min) | BZA arr 23:15 dep 23:30 (15min) | HYB arr 06:15 [last]."
+                    parts = content.split("\n", 1)
+                    header = parts[0]            # "Train 12727 — SF Express..."
+                    sched  = parts[1] if len(parts) > 1 else ""
 
-                    # Split into header ("Train X from A to B. ") and stops section
-                    stops_idx = content.index("Stops")
-                    header = content[:stops_idx]
+                    segments = [seg.strip() for seg in sched.rstrip(".").split("|") if seg.strip()]
+                    if len(segments) <= 4:
+                        continue  # already short
+
+                    trimmed_segs = []
+                    for idx, seg in enumerate(segments):
+                        is_first  = (idx == 0)
+                        is_last   = (idx == len(segments) - 1)
+                        # First word of segment = station code (e.g. "BZA" from "BZA arr 23:15")
+                        seg_code  = seg.split()[0].lower() if seg.split() else ""
+                        is_target = any(term in seg.lower() for term in all_station_terms) \
+                                    or seg_code in all_station_terms
+                        if is_first or is_last or is_target:
+                            trimmed_segs.append(seg)
+
+                    if not trimmed_segs:
+                        continue
+
+                    trimmed_content = header + "\n" + " | ".join(trimmed_segs) + "."
+                    logger.debug(
+                        f"[TRIM-NEW] {doc.metadata.get('train_no','?')}: "
+                        f"{len(segments)} segs → {len(trimmed_segs)} "
+                        f"({len(content)} → {len(trimmed_content)} chars)"
+                    )
+                    doc.page_content = trimmed_content
+
+                elif "Stops" in content:
+                    # ── Old stop-codes format ────────────────────────────────
+                    # "Train X. Stops (N): VSKP > DVD > BZA > HYB. Distance: Y km."
+                    stops_idx    = content.index("Stops")
+                    header       = content[:stops_idx]
                     stops_section = content[stops_idx:]
-
-                    # Remove "Stops (N): " or "Stops: " prefix to get raw stops
-                    colon_idx = stops_section.index(":")
-                    stops_raw = stops_section[colon_idx + 1:].strip()
-
-                    # Split by ">" — actual separator in ChromaDB documents
-                    all_stops = [s.strip() for s in stops_raw.split(">") if s.strip()]
+                    colon_idx    = stops_section.index(":")
+                    stops_raw    = stops_section[colon_idx + 1:].strip()
+                    all_stops    = [s.strip() for s in stops_raw.split(">") if s.strip()]
 
                     if len(all_stops) <= 4:
-                        continue  # already short enough — skip trimming
+                        continue
 
-                    # Keep: first stop (train origin) + queried stations + last stop (train destination)
                     trimmed = []
                     for idx, stop in enumerate(all_stops):
-                        stop_lower = stop.lower()
                         is_first  = (idx == 0)
                         is_last   = (idx == len(all_stops) - 1)
-                        is_target = any(term in stop_lower for term in all_station_terms)
-
+                        is_target = any(term in stop.lower() for term in all_station_terms)
                         if is_first or is_last or is_target:
                             trimmed.append(stop)
 
                     if not trimmed:
-                        continue  # nothing matched — leave doc unchanged
+                        continue
 
-                    # Rebuild doc: header + trimmed stops (using " > " for readability)
                     trimmed_content = (
                         header
                         + f"Stops ({len(all_stops)} total, key stops shown): "
                         + " > ".join(trimmed)
                     )
                     logger.debug(
-                        f"[TRIM] {doc.metadata.get('train_no', '?')}: "
-                        f"{len(all_stops)} stops → {len(trimmed)} stops "
+                        f"[TRIM-OLD] {doc.metadata.get('train_no','?')}: "
+                        f"{len(all_stops)} stops → {len(trimmed)} "
                         f"({len(content)} → {len(trimmed_content)} chars)"
                     )
                     doc.page_content = trimmed_content

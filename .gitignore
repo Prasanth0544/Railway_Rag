@@ -39,4 +39,8 @@ implementation_plan.md
 
 # Analytics logs (runtime data)
 query_log.jsonl
-tests/eval_results.json
+tests/eval_results.json
+verify_app.py
+chroma_db/.*checkpoint*.json
+chroma_db/*.json
+

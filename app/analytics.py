@@ -33,6 +33,7 @@ def log_query(
     live_api_success: bool = False,
     error: str | None = None,
     validation_warnings: list[str] | None = None,
+    context_strategy: str = "default",     # smart_format_docs strategy chosen
 ) -> None:
     """
     Append a query analytics entry to the JSONL log file.
@@ -52,6 +53,7 @@ def log_query(
         "live_api_success": live_api_success,
         "error": error,
         "validation_warnings": validation_warnings or [],
+        "context_strategy": context_strategy,
     }
 
     try:
@@ -103,6 +105,12 @@ def get_stats() -> dict[str, Any]:
         question_counts[q] = question_counts.get(q, 0) + 1
     top_questions = sorted(question_counts.items(), key=lambda x: x[1], reverse=True)[:10]
 
+    # Context strategy distribution
+    strategy_counts: dict[str, int] = {}
+    for e in entries:
+        s = e.get("context_strategy", "default")
+        strategy_counts[s] = strategy_counts.get(s, 0) + 1
+
     return {
         "total_queries": total,
         "avg_response_time_ms": round(avg_response_ms, 1),
@@ -112,5 +120,6 @@ def get_stats() -> dict[str, Any]:
         "live_api_success_rate_pct": round(live_success / live_used * 100, 1) if live_used > 0 else 0,
         "hallucination_flags": hallucination_flags,
         "intent_distribution": intent_counts,
+        "context_strategy_distribution": strategy_counts,
         "top_questions": [{"question": q, "count": c} for q, c in top_questions],
     }

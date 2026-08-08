@@ -445,7 +445,7 @@ async def ask_question_stream(request: QuestionRequest):
             docs = rag_chain.retriever.retrieve(request.question)
 
             # Send sources immediately (before LLM starts)
-            from app.rag import get_sources, format_docs
+            from app.rag import get_sources, smart_format_docs
             sources = get_sources(docs)
             scores  = [s["relevance_score"] for s in sources if isinstance(s.get("relevance_score"), (int, float))]
             avg_score = round(sum(scores) / len(scores), 4) if scores else 0.0
@@ -463,7 +463,7 @@ async def ask_question_stream(request: QuestionRequest):
             # Step 2: Stream LLM tokens
             from app.rag import SYSTEM_PROMPT, HUMAN_PROMPT
             from langchain_core.prompts import ChatPromptTemplate
-            context = format_docs(docs)
+            context = smart_format_docs(docs, query=request.question, intent="STATIC")
             prompt  = ChatPromptTemplate.from_messages([
                 ("system", SYSTEM_PROMPT),
                 ("human",  HUMAN_PROMPT),
@@ -647,7 +647,7 @@ async def ask_question_smart(request: QuestionRequest, raw_request: Request):
                     if train_no and train_no not in question:
                         query_for_retrieval = f"{question} train {train_no}"
                     
-                    docs = rag_chain.retriever.retrieve(query_for_retrieval)
+                    docs = rag_chain.retriever.retrieve(query_for_retrieval, intent_category=intent_res.get("intent_category", ""))
                     from app.rag import get_sources
                     sources = get_sources(docs)
 
@@ -702,9 +702,9 @@ async def ask_question_smart(request: QuestionRequest, raw_request: Request):
             # 3. Format prompt context
             from app.rag import SYSTEM_PROMPT, HUMAN_PROMPT
             from langchain_core.prompts import ChatPromptTemplate
-            from app.rag import format_docs
+            from app.rag import smart_format_docs
 
-            static_context = format_docs(docs) if docs else "No static database context."
+            static_context = smart_format_docs(docs, query=request.question, intent=intent) if docs else "No static database context."
 
             # Merge static + live contexts into final prompt context
             context_parts = []
@@ -923,10 +923,10 @@ async def ask_with_file(
         rag_context = ""
         sources = []
         if rag_chain and retrieval_query.strip():
-            from app.rag import format_docs, get_sources
+            from app.rag import smart_format_docs, get_sources
             docs = rag_chain.retriever.retrieve(retrieval_query)
             if docs:
-                rag_context = format_docs(docs)
+                rag_context = smart_format_docs(docs, query=retrieval_query, intent="STATIC")
                 sources = get_sources(docs)
 
         # ── Step 4: Full Gemini Vision answer for railway content ─────────────
