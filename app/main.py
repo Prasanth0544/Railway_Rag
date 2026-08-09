@@ -333,6 +333,31 @@ async def root():
     )
 
 
+@app.post("/clear-cache", tags=["Admin"])
+async def clear_cache(raw_request: Request):
+    """Clear the server-side response cache and session conversation history."""
+    client_ip = raw_request.client.host if raw_request.client else "unknown"
+    session_id = raw_request.headers.get("X-Session-Id", client_ip)
+    session_key = session_id or client_ip
+
+    # Clear response cache (all users — it's a shared static answer cache)
+    cache_count = len(_response_cache)
+    _response_cache.clear()
+
+    # Clear conversation history for this session only
+    history_count = len(_session_history.get(session_key, []))
+    if session_key in _session_history:
+        _session_history[session_key] = []
+
+    logger.info(f"[CLEAR-CACHE] Session={session_key}: cleared {cache_count} cache entries, {history_count} history turns")
+    return {
+        "status": "ok",
+        "cleared_cache_entries": cache_count,
+        "cleared_history_turns": history_count,
+        "session": session_key,
+    }
+
+
 @app.get("/health", tags=["Health"])
 async def health():
     """Health check endpoint — called by the web UI on load."""

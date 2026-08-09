@@ -13,6 +13,7 @@ const questionInput   = document.getElementById('questionInput');
 const charCount       = document.getElementById('charCount');
 const submitBtn       = document.getElementById('submitQuestion');
 const clearBtn        = document.getElementById('clearChat');
+const clearCacheBtn   = document.getElementById('clearCache');
 const themeToggle     = document.getElementById('themeToggle');
 const chipButtons     = document.querySelectorAll('[data-question]');
 
@@ -921,6 +922,39 @@ clearBtn.addEventListener('click', () => {
   clearAttachedFile();
   localStorage.removeItem(CHAT_KEY);
   questionInput.focus();
+});
+
+clearCacheBtn.addEventListener('click', async () => {
+  const btn = clearCacheBtn;
+  const originalText = btn.innerHTML;
+  btn.disabled = true;
+  btn.style.opacity = '0.6';
+  btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" style="animation:spin 0.8s linear infinite"><path d="M21 12a9 9 0 1 1-9-9"/></svg> Clearing...`;
+  if (!document.getElementById('spin-style')) {
+    const s = document.createElement('style');
+    s.id = 'spin-style';
+    s.textContent = '@keyframes spin{to{transform:rotate(360deg)}}';
+    document.head.appendChild(s);
+  }
+  try {
+    const baseUrl = localStorage.getItem(STORAGE_KEY) || window.location.origin;
+    const res = await fetch(`${baseUrl}/clear-cache`, { method: 'POST' });
+    const data = await res.json();
+    // Brief success toast
+    btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="20 6 9 17 4 12"/></svg> Cleared!`;
+    btn.style.color = '#22c55e';
+    console.log('[Cache Cleared]', data);
+  } catch (err) {
+    btn.innerHTML = `❌ Failed`;
+    console.error('[Clear Cache Error]', err);
+  } finally {
+    setTimeout(() => {
+      btn.innerHTML = originalText;
+      btn.disabled = false;
+      btn.style.opacity = '';
+      btn.style.color = '';
+    }, 1800);
+  }
 });
 
 chipButtons.forEach(btn => {

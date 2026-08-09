@@ -365,7 +365,7 @@ class UnifiedRetriever:
 
         import difflib
         query_lower = query.lower()
-        found: list[tuple[str, str]] = []
+        found_with_pos: list[tuple[int, tuple[str, str]]] = []
         matched_spans: list[tuple[int, int]] = []
 
         _stop = {
@@ -386,8 +386,8 @@ class UnifiedRetriever:
                     continue
                 matched_spans.append((s, e))
                 entry = self.station_names_to_code[name]
-                if entry not in found:
-                    found.append(entry)
+                if not any(e == entry for _, e in found_with_pos):
+                    found_with_pos.append((s, entry))
 
         # Pass 2: fuzzy match remaining unmatched long words
         ignore_words = {
@@ -396,17 +396,21 @@ class UnifiedRetriever:
             "cancellation", "cancel", "charge", "charges", "rule", "rules", "luggage", "class",
             "between", "which", "running", "express", "superfast", "mail"
         }
-        words = re.findall(r"\b[a-zA-Z]{4,}\b", query_lower)
-        for word in words:
+        words = list(re.finditer(r"\b[a-zA-Z]{4,}\b", query_lower))
+        for match in words:
+            word = match.group()
+            s = match.start()
             if word in ignore_words or word in _stop:
                 continue
             close_matches = difflib.get_close_matches(word, self.all_station_names, n=1, cutoff=0.82)
             if close_matches:
                 entry = self.station_names_to_code.get(close_matches[0].lower())
-                if entry and entry not in found:
-                    found.append(entry)
+                if entry and not any(e == entry for _, e in found_with_pos):
+                    found_with_pos.append((s, entry))
 
-        return found
+        # Sort by appearance position s in the query (earliest first)
+        found_with_pos.sort(key=lambda x: x[0])
+        return [entry for _, entry in found_with_pos]
 
     def _lookup_by_train_number(self, query: str) -> tuple[list[Document], list[str]]:
         """
@@ -642,6 +646,8 @@ class UnifiedRetriever:
         query = _expand_railway_synonyms(query)
 
         # --- Step 2: Resolve ALL station names in the query ---
+        # _resolve_all_stations returns stations sorted by appearance order (s) in the query,
+        # ensuring station[0] is always the FROM station (e.g. BZA before HYB/SC).
         all_stations = self._resolve_all_stations(query)
         # Expose last resolved stations to RAGChain for confidence check
         self._last_all_stations = all_stations
