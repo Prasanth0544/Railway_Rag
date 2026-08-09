@@ -12,7 +12,7 @@ services:
       - key: LLM_PROVIDER
         value: gemini
       - key: GEMINI_MODEL
-        value: gemini-3.1-flash-lite
+        value: gemini-3.6-flash
       - key: USE_LOCAL_EMBEDDINGS
         value: "false"        # Gemini cloud embeddings (3072-dim) — no local model loaded
       - key: HF_HUB_OFFLINE
@@ -28,3 +28,9 @@ services:
       - key: RAPIDAPI_KEY
         sync: false            # Optional: set in Render dashboard for reliable live train tracking from cloud IPs
                                # Get free key at: https://rapidapi.com/search/indian%20railway
+      - key: CHROMA_TELEMETRY
+        value: "FALSE"         # Disable ChromaDB telemetry pings — saves network + RAM overhead
+
+# NOTE: If the service exceeds memory on the free tier (512MB), upgrade to the
+# Starter plan ($7/month, 1GB RAM) in the Render dashboard.
+# The ChromaDB HNSW index for 35k+ docs uses ~300MB RAM at runtime.

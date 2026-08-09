@@ -88,8 +88,17 @@ def get_embeddings():
 
 
 def get_chroma_client() -> chromadb.ClientAPI:
-    """Get persistent ChromaDB client."""
-    return chromadb.PersistentClient(path=CHROMA_DB_DIR)
+    """Get persistent ChromaDB client.
+    
+    On cloud (Render free tier 512MB), we configure ChromaDB to use
+    memory-mapped I/O (allow_reset=False, anonymized_telemetry=False)
+    to minimize RAM overhead.
+    """
+    settings = chromadb.Settings(
+        anonymized_telemetry=False,     # disable telemetry pings
+        allow_reset=False,              # production safety — no accidental wipes
+    )
+    return chromadb.PersistentClient(path=CHROMA_DB_DIR, settings=settings)
 
 
 # ─────────────────────────────────────────────
@@ -197,32 +206,50 @@ class UnifiedRetriever:
         self.top_k = top_k
         self.client = get_chroma_client()
         self.embeddings = get_embeddings()
+        # Lazy store registry: collection name → Chroma object (or None = known but not yet opened)
         self.vector_stores: dict = {}
-        self._load_collections()
+        self._discover_collections()
         self._init_station_resolver()
 
-    def _load_collections(self) -> None:
-        """Load all existing ChromaDB collections."""
-        from langchain_chroma import Chroma  # type: ignore[import-untyped]
-
+    def _discover_collections(self) -> None:
+        """Discover which collections exist — but do NOT load their HNSW indices yet.
+        
+        Chroma vector stores are opened on-demand in _get_store() to avoid
+        loading all HNSW indices into RAM at startup (critical for Render 512MB).
+        """
         existing = {col.name for col in self.client.list_collections()}
-
         for name in ALL_COLLECTIONS:
-            if name not in existing:
-                continue
+            if name in existing:
+                self.vector_stores[name] = None   # sentinel = known, not yet loaded
+
+        if self.vector_stores:
+            logger.info(f"[OK] Retriever ready — collections discovered (lazy): {list(self.vector_stores.keys())}")
+        else:
+            logger.warning("[WARN] No ChromaDB collections found! Run: python scripts/create_embeddings.py")
+
+    def _get_store(self, name: str):
+        """Return the Chroma vector store for `name`, opening it on first access.
+        
+        HNSW index files are memory-mapped by the OS — calling this only
+        allocates the Python wrapper + triggers mmap, not a full RAM copy.
+        Stores that are never needed during a query cycle are never loaded.
+        """
+        if name not in self.vector_stores:
+            return None
+        if self.vector_stores[name] is None:
+            from langchain_chroma import Chroma  # type: ignore[import-untyped]
             try:
                 self.vector_stores[name] = Chroma(
                     collection_name=name,
                     embedding_function=self.embeddings,
                     client=self.client,
                 )
+                logger.debug(f"[LAZY] Opened collection '{name}'")
             except Exception as exc:
-                logger.warning(f"[WARN] Could not load collection '{name}': {exc}")
-
-        if self.vector_stores:
-            logger.info(f"[OK] Retriever ready — collections: {list(self.vector_stores.keys())}")
-        else:
-            logger.warning("[WARN] No ChromaDB collections found! Run: python scripts/create_embeddings.py")
+                logger.warning(f"[WARN] Could not open collection '{name}': {exc}")
+                del self.vector_stores[name]  # remove bad entry
+                return None
+        return self.vector_stores[name]
 
     def _init_station_resolver(self) -> None:
         """Initialize station alias search maps using build_station_lookup."""
@@ -753,7 +780,7 @@ class UnifiedRetriever:
         all_results: list[tuple[Document, float]] = []
 
         for name in active_collections:
-            store = self.vector_stores.get(name)
+            store = self._get_store(name)
             if not store:
                 continue
             try:
