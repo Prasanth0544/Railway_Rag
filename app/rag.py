@@ -321,13 +321,14 @@ import re as _re
 # ─────────────────────────────────────────────────────────────────
 
 # Per-strategy character budgets
+# A 65-stop route doc is ~2,000 chars; give enough room for train info + full stops
 _BUDGET = {
-    "train_number":  5_000,   # 1-2 exact route docs for that train
-    "route_search":  6_000,   # 5-10 compact route docs (multi-train)
-    "rules_refund":  8_000,   # 2-3 full rules docs (never truncate mid-rule)
-    "station_info":  2_000,   # 1 station doc
-    "class_amenity": 5_000,   # 1-2 train + rules docs
-    "default":      12_000,   # fallback — original behaviour
+    "train_number":  15_000,  # full route doc (up to 65 stops ~2,000c) + train info
+    "route_search":  12_000,  # 8-15 compact route docs for multi-train comparison
+    "rules_refund":  15_000,  # full rules without truncation (rules avg ~400c each)
+    "station_info":   8_000,  # station doc + nearby trains info
+    "class_amenity": 10_000,  # train + rules + reference docs
+    "default":       18_000,  # fallback — generous budget for unclassified queries
 }
 
 _RULES_KEYWORDS = frozenset([
@@ -422,15 +423,15 @@ def smart_format_docs(
         if not rules_docs:
             rules_docs = docs
         logger.debug(f"[SMART_CTX] Strategy=rules_refund docs={len(rules_docs)}")
-        return _build_context(rules_docs[:4], _BUDGET["rules_refund"])
+        return _build_context(rules_docs, _BUDGET["rules_refund"])
 
     # Strategy 3: Station info query
     if any(kw in q for kw in _STATION_KEYWORDS):
         station_docs = [d for d in docs if d.metadata.get("source_type") == "station"]
         if not station_docs:
-            station_docs = docs[:2]
+            station_docs = docs
         logger.debug(f"[SMART_CTX] Strategy=station_info docs={len(station_docs)}")
-        return _build_context(station_docs[:2], _BUDGET["station_info"])
+        return _build_context(station_docs, _BUDGET["station_info"])
 
     # Strategy 4: Train class / amenity query
     if any(kw in q for kw in _CLASS_KEYWORDS):
@@ -438,7 +439,7 @@ def smart_format_docs(
         if not class_docs:
             class_docs = docs
         logger.debug(f"[SMART_CTX] Strategy=class_amenity docs={len(class_docs)}")
-        return _build_context(class_docs[:4], _BUDGET["class_amenity"])
+        return _build_context(class_docs, _BUDGET["class_amenity"])
 
     # Strategy 5: Route search — two+ stations or route keywords
     has_route_kw = any(kw in q for kw in [
