@@ -88,17 +88,8 @@ def get_embeddings():
 
 
 def get_chroma_client() -> chromadb.ClientAPI:
-    """Get persistent ChromaDB client.
-    
-    On cloud (Render free tier 512MB), we configure ChromaDB to use
-    memory-mapped I/O (allow_reset=False, anonymized_telemetry=False)
-    to minimize RAM overhead.
-    """
-    settings = chromadb.Settings(
-        anonymized_telemetry=False,     # disable telemetry pings
-        allow_reset=False,              # production safety — no accidental wipes
-    )
-    return chromadb.PersistentClient(path=CHROMA_DB_DIR, settings=settings)
+    """Get persistent ChromaDB client."""
+    return chromadb.PersistentClient(path=CHROMA_DB_DIR)
 
 
 # ─────────────────────────────────────────────
@@ -494,7 +485,10 @@ class UnifiedRetriever:
         other_docs: list[Document] = []
 
         from_canon, from_code = station_terms[0]
-        to_canon,   to_code   = station_terms[1]
+
+        # All stations beyond [0] are treated as alternative TO stations
+        # e.g. "Hyderabad" resolves to both HYB and SC — trains to either qualify
+        to_terms = station_terms[1:]  # list of (canon, code) for destination alternatives
 
         for doc in docs:
             src_type = doc.metadata.get("source_type", "")
@@ -506,13 +500,19 @@ class UnifiedRetriever:
 
             content_lower = doc.page_content.lower()
 
-            # Check 1: Both stations present
+            # Check 1: FROM station present
             has_from = from_canon in content_lower or from_code in content_lower
-            has_to   = to_canon   in content_lower or to_code   in content_lower
+
+            # Check 1b: ANY of the TO alternatives present (handles HYB/SC both = Hyderabad)
+            has_to = any(
+                canon in content_lower or code in content_lower
+                for canon, code in to_terms
+            )
+
             if not (has_from and has_to):
                 continue  # drop silently — doesn't serve this route
 
-            # Check 2: Correct direction (FROM before TO in stop sequence)
+            # Check 2: Correct direction (FROM before nearest TO in stop sequence)
             # Direction check — handles both doc formats:
             #   New (time-based): "Header\nVSKP dep 17:20 | BZA arr 23:15 | HYB arr 06:15 [last]."
             #   Old (stop-codes): "Stops (N): VSKP > DVD > BZA > HYB"
@@ -532,11 +532,16 @@ class UnifiedRetriever:
 
                 if _stops:
                     fi = next((i for i, s in enumerate(_stops) if from_canon in s or from_code in s), -1)
-                    ti = next((i for i, s in enumerate(_stops) if to_canon   in s or to_code   in s), -1)
+                    # Find the earliest TO station position among all alternatives
+                    ti = -1
+                    for to_canon, to_code in to_terms:
+                        ti_alt = next((i for i, s in enumerate(_stops) if to_canon in s or to_code in s), -1)
+                        if ti_alt >= 0 and (ti < 0 or ti_alt < ti):
+                            ti = ti_alt
                     if fi >= 0 and ti >= 0 and fi >= ti:
                         logger.debug(
                             f"[DIR] Dropped wrong-direction {doc.metadata.get('train_no','?')}: "
-                            f"{from_code}@{fi} >= {to_code}@{ti}"
+                            f"{from_code}@{fi} >= TO@{ti}"
                         )
                         continue  # wrong direction
             except Exception:

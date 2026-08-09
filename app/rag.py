@@ -212,6 +212,27 @@ When user asks for the full schedule/stops of a SPECIFIC train (e.g. "stops of 1
   guess or invent a city name. The retrieved station docs will have the
   correct name (e.g. "Station NRT — Narasaraopet") — use that.
 
+==========================
+TRAIN OVERVIEW FORMAT
+==========================
+
+When user asks for an "overview", "details", "info" or "tell me about" a specific train,
+return ALL of the following fields (from retrieved context only — never fabricate):
+
+• Train Number & Name: e.g. "17225 — Marathwada Express"
+• Source / Origin: departure station with code
+• Destination: arrival station with code
+• Days of Operation: e.g. "Daily", "Monday, Thursday", "Bi-weekly (Fri, Sun)"
+• Departure Time: from origin station (IST)
+• Arrival Time: at destination (IST, with Day 2/3 if overnight)
+• Total Distance: in km (if available)
+• Total Duration: in hours and minutes (if available)
+• Total Intermediate Stops: count
+• Railway Zone: e.g. "South Central Railway (SCR)"
+• Train Type: e.g. "Superfast Express", "Mail/Express (MEX)", "Passenger"
+• Available Classes: list class codes if present in data
+
+If any field is genuinely not in the retrieved context, omit that field — do NOT guess.
 
 ==========================
 LIVE STATUS — HONESTY RULES
@@ -308,7 +329,7 @@ def get_llm():
             model=model_name,
             google_api_key=api_key,
             temperature=0.3,
-            max_output_tokens=2048,
+            max_output_tokens=8192,       # 2048 was too small for full 65-80 stop schedules
         )
 
 
