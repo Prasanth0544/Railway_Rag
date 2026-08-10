@@ -42,7 +42,7 @@ CHROMA_DB_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "chroma
 ALL_COLLECTIONS = ["railway_rules", "trains", "stations", "train_routes", "references"]
 
 # Results to pull per collection before merging
-PER_COLLECTION_K = 10  # results per collection before merging (increased from 5 for better recall)
+PER_COLLECTION_K = 10  # results per collection before merging
 
 # Max docs returned from a single keyword $contains scan
 # Must be large enough to cover all routes for any station code.
@@ -800,7 +800,7 @@ class UnifiedRetriever:
                 )
                 for doc, score in results:
                     if score < 0.30:
-                        continue  # tightened threshold (was 0.10) — reduces noise docs
+                        continue  # tightened threshold — reduces noise docs
                     doc.metadata["collection"] = name
                     doc.metadata["relevance_score"] = round(score, 4)
                     all_results.append((doc, score))

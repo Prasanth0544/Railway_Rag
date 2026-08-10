@@ -31,6 +31,13 @@ services:
       - key: CHROMA_TELEMETRY
         value: "FALSE"         # Disable ChromaDB telemetry pings — saves network + RAM overhead
 
-# NOTE: If the service exceeds memory on the free tier (512MB), upgrade to the
-# Starter plan ($7/month, 1GB RAM) in the Render dashboard.
-# The ChromaDB HNSW index for 35k+ docs uses ~300MB RAM at runtime.
+# Memory budget on Render free tier (512MB):
+#   Python + FastAPI + libs : ~100MB
+#   ChromaDB (rules/trains/stations/references HNSW) : ~100MB
+#   train_routes keyword-only (HNSW skipped, saves ~200MB) : ~10MB
+#   Response cache + session history : ~20MB
+#   Headroom : ~280MB  ← safe under 512MB limit
+#
+# train_routes uses keyword + exact search only (semantic search skipped
+# because its 3072-dim HNSW would cost ~200MB and fails anyway on Render
+# due to embedding dimension mismatch vs. the local 384-dim model).

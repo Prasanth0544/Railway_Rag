@@ -11,7 +11,6 @@ langchain-community
 
 # ── LLM Providers ─────────────────────────────────────
 langchain-google-genai          # Gemini API (cloud LLM + embeddings)
-langchain-openai                # OpenAI-compatible (for LM Studio local server)
 
 # ── Vector Store ──────────────────────────────────────
 langchain-chroma
@@ -30,8 +29,3 @@ Pillow                          # Image processing for multi-modal uploads (PNG/
 # ── Local Embeddings (DISABLED on Render — saves ~700MB disk + ~400MB RAM) ────
 # sentence-transformers==3.4.1   # ← Only needed if USE_LOCAL_EMBEDDINGS=true (local dev)
 #                                  Install manually: pip install sentence-transformers
-
-# ── Streamlit UI (local dev only) ────────────────────────────────────────────
-# streamlit              # ← DISABLED on Render (saves ~150MB RAM).
-#                          Install manually for local Streamlit UI:
-#                          pip install streamlit
