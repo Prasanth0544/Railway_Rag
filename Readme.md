@@ -50,7 +50,7 @@ User Question
       │                          Step 5: Semantic vector search
       │                          Step 6: Reciprocal Rank Fusion (RRF) merge
       │                          Step 7: Direction validation (A→B not B→A)
-      │                          Step 8: Route doc trimming (90% token reduction)
+      │                          Step 8: Route doc trimming (over 80% token reduction)
       │
       ├─── LIVE ────────────► Live Train Status (tiered by environment)
       │                          Local:  NTES Direct (enquiry.indianrail.gov.in)
@@ -60,12 +60,12 @@ User Question
       ├─── PNR ─────────────► PNR Status API
       │
       └─── All paths ───────► Smart Context Builder
-                                  train_number  → 5,000 char budget
-                                  route_search  → 6,000 char budget
-                                  rules_refund  → 8,000 char budget
-                                  station_info  → 2,000 char budget
-                                  class_amenity → 5,000 char budget
-                                  default       → 12,000 char budget
+                                  train_number  → 15,000 char budget
+                                  route_search  → 12,000 char budget
+                                  rules_refund  → 15,000 char budget
+                                  station_info  →  8,000 char budget
+                                  class_amenity → 10,000 char budget
+                                  default       → 18,000 char budget
                                        │
                                        ▼
                                Gemini Flash (LLM)
@@ -88,7 +88,7 @@ User Question
 | **Smart Context Builder** | 6 query-type strategies with per-type char budgets — sends only what Gemini needs, no wasted tokens |
 | **Schedule Times in Routes** | 10,239 route docs have full `arr HH:MM dep HH:MM (Xmin)` per stop — LLM can answer "what time does 12727 reach BZA?" |
 | **Fuzzy Station Resolver** | Handles typos & phonetic variants (e.g. "Santhamagulur" → correct station) using difflib — 11,354 station names/AKAs |
-| **Route Trimming** | Condenses 70-stop schedules to origin→queried stops→destination (reduces tokens by ~90%) |
+| **Route Trimming** | Condenses 70-stop schedules to origin→queried stops→destination (reduces tokens by over 80%) |
 | **Direction Validation** | Validates A→B direction in train route docs — drops wrong-direction trains from results |
 | **Multi-turn Memory** | Keeps last 5 Q&A pairs per session for contextual follow-up questions |
 | **PNR Support** | Detects 10-digit PNR in query and fetches live booking + passenger status |
@@ -273,7 +273,7 @@ Edit `.env` and add your values:
 ```env
 GOOGLE_API_KEY=your-gemini-api-key       # Get free at aistudio.google.com
 LLM_PROVIDER=gemini
-GEMINI_MODEL=gemini-3.6-flash
+GEMINI_MODEL=gemini-2.5-flash
 USE_LOCAL_EMBEDDINGS=false               # Uses Gemini cloud embeddings
 DATA_COLLECTIONS_DIR=path/to/your/csv_files
 
@@ -361,6 +361,7 @@ envVars:
 | `GET` | `/trains/{train_no}` | Get specific train details |
 | `GET` | `/stations/{station_code}` | Get specific station details |
 | `GET` | `/admin/stats` | Query analytics — counts, intent distribution, context strategies |
+| `POST` | `/clear-cache` | Clear response cache + session history (dev/debug) |
 
 ---
 
@@ -408,7 +409,7 @@ curl -X POST http://localhost:8000/ask \
 | `GOOGLE_API_KEY_1` … `_N` | — | Additional keys for embedding rotation (optional) |
 | `RAPIDAPI_KEY` | — | RapidAPI key for live train data on cloud |
 | `LLM_PROVIDER` | `gemini` | `gemini` or `lmstudio` (offline) |
-| `GEMINI_MODEL` | `gemini-3.6-flash` | Gemini model name |
+| `GEMINI_MODEL` | `gemini-2.5-flash` | Gemini model name |
 | `USE_LOCAL_EMBEDDINGS` | `false` | `true` = offline sentence-transformers, `false` = Gemini cloud |
 | `DATA_COLLECTIONS_DIR` | — | Path to CSV data files directory |
 | `LOCAL_API_BASE` | `http://localhost:1234/v1` | LM Studio server URL |
