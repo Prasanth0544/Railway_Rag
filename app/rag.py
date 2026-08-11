@@ -31,8 +31,31 @@ For completely unrelated topics (cooking, sports, weather etc.), politely declin
 to railway queries. However, general follow-up questions in a railway conversation are fine.
 
 ==========================
-INFORMATION SOURCES
+SELF-INTRODUCTION
 ==========================
+
+If the user asks "who are you?", "tell me about yourself", "what can you do?",
+"introduce yourself", or any similar meta-question about your identity or capabilities,
+respond with a friendly self-introduction:
+
+  Hello! I am **RailGPT** — your dedicated AI assistant for all things related to **Indian Railways**.
+
+  Here is how I can help you:
+  • **Train Schedules & Routes**: Find timetables, intermediate stops, days of operation,
+    and trains running between stations.
+  • **Live Train Running Status**: Check real-time tracking, delay updates, current location,
+    and estimated arrival times.
+  • **PNR Status**: Track your 10-digit PNR booking status, coach/berth allocation,
+    and chart preparation status.
+  • **Railway Rules & Policies**: Get official info on cancellation fees, refunds, luggage
+    allowances, Tatkal/Premium Tatkal quotas, and travel rules.
+  • **Classes & Quotas**: Understand travel classes (1A, 2A, 3A, 3E, SL, CC, etc.)
+    and reservation quotas (GN, TQ, PT, LD, PH, DF, etc.).
+  • **Station Information**: Look up station codes, platform details, zones,
+    and nearby connectivity.
+
+  How can I help you with your journey or railway query today?
+
 
 You have access to three real-time and static sources:
 
@@ -146,17 +169,20 @@ STATION CODES — COMMON REFERENCES
 NDLS = New Delhi          | BCT  = Mumbai Central
 SBC  = Bengaluru City     | MAS  = Chennai Central
 HYB  = Hyderabad Deccan   | SC   = Secunderabad Junction
-BZA  = Vijayawada Jn      | VSKP = Visakhapatnam Jn
-RJY  = Rajahmundry        | GNT  = Guntur Junction
-TPTY = Tirupati           | NLR  = Nellore
-OGL  = Ongole             | KI   = Kazipet Junction
-GDR  = Gudur Junction     | MTM  = Mangalagiri
-BBS  = Bhubaneswar        | PURI = Puri
-PUNE = Pune Junction      | AMD  = Ahmedabad Junction
+NPA  = Hyderabad Nampally | BZA  = Vijayawada Junction
+VSKP = Visakhapatnam Jn   | RJY  = Rajahmundry
+GNT  = Guntur Junction    | TPTY = Tirupati
+NLR  = Nellore            | KZJ  = Kazipet Junction
+OGL  = Ongole             | GDR  = Gudur Junction
+MGLA = Mangalagiri        | BBS  = Bhubaneswar
+PURI = Puri               | PUNE = Pune Junction
+AMD  = Ahmedabad Junction
 
 Map user abbreviations to official names:
   "Vizag" → Visakhapatnam (VSKP)
-  "Hyd" / "Hyderabad" → check context (HYB or SC)
+  "Hyd" / "Hyderabad" → check context: city centre = HYB (Deccan/Nampally), north = SC (Secunderabad)
+  "Secunderabad" → Secunderabad Junction (SC)
+  "Nampally" → Hyderabad Nampally (NPA) or Hyderabad Deccan (HYB)
   "Bangalore" → Bengaluru City (SBC)
   "Bombay" / "Mumbai" → Mumbai Central (BCT) or CST/LTT
   "Madras" → Chennai Central (MAS)
@@ -407,17 +433,18 @@ def smart_format_docs(
     docs: list[Document],
     query: str = "",
     intent: str = "STATIC",
+    intent_category: str = "",
 ) -> str:
     """
     Build LLM context intelligently based on query type.
 
     Strategy matrix:
-      1. train_number  → exact train docs only          (budget: 5,000 chars)
-      2. rules_refund  → rules + references docs only   (budget: 8,000 chars)
-      3. station_info  → station docs only              (budget: 2,000 chars)
-      4. class_amenity → train + rules docs             (budget: 5,000 chars)
-      5. route_search  → train_route + train docs only  (budget: 6,000 chars)
-      6. default       → original flat budget           (budget: 12,000 chars)
+      1. train_number  → exact train docs only          (budget: 15,000 chars)
+      2. rules_refund  → rules + references docs only   (budget: 15,000 chars)
+      3. station_info  → station docs only              (budget:  8,000 chars)
+      4. class_amenity → train + rules docs             (budget: 10,000 chars)
+      5. route_search  → train_route + train docs only  (budget: 12,000 chars)
+      6. default       → all docs, generous budget      (budget: 18,000 chars)
     """
     if not docs:
         return "No relevant documents found."
@@ -438,20 +465,22 @@ def smart_format_docs(
         logger.debug(f"[SMART_CTX] Strategy=train_number train={num} docs={len(relevant)}")
         return _build_context(relevant, _BUDGET["train_number"])
 
-    # Strategy 2: Rules / Refund / Policy query
-    if any(kw in q for kw in _RULES_KEYWORDS):
+    # Strategy 2: Rules / Refund / Policy
+    if intent_category == "CANCELLATION_RULES" or any(kw in q for kw in _RULES_KEYWORDS):
         rules_docs = [d for d in docs if d.metadata.get("source_type") in ("rule", "reference")]
         if not rules_docs:
             rules_docs = docs
-        logger.debug(f"[SMART_CTX] Strategy=rules_refund docs={len(rules_docs)}")
+        logger.debug(f"[SMART_CTX] Strategy=rules_refund (intent={intent_category or 'kw'}) docs={len(rules_docs)}")
         return _build_context(rules_docs, _BUDGET["rules_refund"])
 
-    # Strategy 3: Station info query
-    if any(kw in q for kw in _STATION_KEYWORDS):
+    # Strategy 3: Station info — triggered by classifier OR keyword
+    # Fixes Issue 4: "Tell me about Vijayawada Junction station" → STATION_INFO intent
+    # used to miss narrow _STATION_KEYWORDS list and fall to default strategy
+    if intent_category == "STATION_INFO" or any(kw in q for kw in _STATION_KEYWORDS):
         station_docs = [d for d in docs if d.metadata.get("source_type") == "station"]
         if not station_docs:
             station_docs = docs
-        logger.debug(f"[SMART_CTX] Strategy=station_info docs={len(station_docs)}")
+        logger.debug(f"[SMART_CTX] Strategy=station_info (intent={intent_category or 'kw'}) docs={len(station_docs)}")
         return _build_context(station_docs, _BUDGET["station_info"])
 
     # Strategy 4: Train class / amenity query
@@ -462,23 +491,25 @@ def smart_format_docs(
         logger.debug(f"[SMART_CTX] Strategy=class_amenity docs={len(class_docs)}")
         return _build_context(class_docs, _BUDGET["class_amenity"])
 
-    # Strategy 5: Route search — two+ stations or route keywords
+    # Strategy 5: Route search — triggered by classifier OR keyword/station-code heuristics
+    # Fixes Issue 3: BETWEEN_STATIONS intent now directly selects route strategy
     has_route_kw = any(kw in q for kw in [
         "trains from", "trains between", "trains via", "which trains",
         "train from", "train between", "express from", "go from",
         "travel from", "train to", "go to",
     ])
     station_codes = _re.findall(r'\b[A-Z]{2,4}\b', query)
-    if len(station_codes) >= 2 or has_route_kw:
+    if intent_category == "BETWEEN_STATIONS" or len(station_codes) >= 2 or has_route_kw:
         route_docs = [d for d in docs if d.metadata.get("source_type") in ("train_route", "train")]
         if not route_docs:
             route_docs = docs
-        logger.debug(f"[SMART_CTX] Strategy=route_search docs={len(route_docs)}")
+        logger.debug(f"[SMART_CTX] Strategy=route_search (intent={intent_category or 'kw'}) docs={len(route_docs)}")
         return _build_context(route_docs, _BUDGET["route_search"])
 
     # Strategy 6: Default
     logger.debug(f"[SMART_CTX] Strategy=default docs={len(docs)}")
     return _build_context(docs, _BUDGET["default"])
+
 
 
 def format_docs(docs: list[Document]) -> str:

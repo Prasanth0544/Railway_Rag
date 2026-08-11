@@ -1,12 +1,20 @@
-# Environment
+# ─────────────────────────────────────────────
+# Environment & secrets
+# ─────────────────────────────────────────────
 .env
+.env.local
+.env.*.local
+
+# ─────────────────────────────────────────────
+# Python virtual environment
+# ─────────────────────────────────────────────
 .venv/
 venv/
+env/
 
-# ChromaDB persistent storage
-# chroma_db tracked via Git LFS
-
-# Python
+# ─────────────────────────────────────────────
+# Python build artifacts
+# ─────────────────────────────────────────────
 __pycache__/
 *.pyc
 *.pyo
@@ -14,33 +22,52 @@ __pycache__/
 dist/
 build/
 
-# IDE
+# ─────────────────────────────────────────────
+# IDE / Editor
+# ─────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
 *.swo
 
-# OS
+# ─────────────────────────────────────────────
+# OS artifacts
+# ─────────────────────────────────────────────
 Thumbs.db
 .DS_Store
 
-# md files
-COMMANDS.md
-project_summary.md
-
-# Screenshots / images accidentally in root
-Screenshot*.png
-*.png
-
-# Ignore data/chroma_db
+# ─────────────────────────────────────────────
+# ChromaDB
+# NOTE: chroma_db/ IS tracked via Git LFS (see .gitattributes)
+#   chroma.sqlite3, *.bin, *.pickle → pushed to LFS on commit
+#   DO NOT add "chroma_db/" or "*.bin" blanket rules here —
+#   they would silently block re-adding LFS-tracked files.
+# Only ignore the data/ subdirectory copy (not used in prod)
+# ─────────────────────────────────────────────
 data/chroma_db/
+chroma_db/*.json
+chroma_db/.*checkpoint*.json
 
-implementation_plan.md
-
-# Analytics logs (runtime data)
+# ─────────────────────────────────────────────
+# Runtime / analytics data (no deployment value)
+# ─────────────────────────────────────────────
 query_log.jsonl
 tests/eval_results.json
-verify_app.py
-chroma_db/.*checkpoint*.json
-chroma_db/*.json
 
+# ─────────────────────────────────────────────
+# Internal planning / scratch docs
+# ─────────────────────────────────────────────
+implementation_plan.md
+COMMANDS.md
+project_summary.md
+verify_app.py
+
+# ─────────────────────────────────────────────
+# Screenshots (root level only — avoid *.png globally)
+# ─────────────────────────────────────────────
+Screenshot*.png
+
+# ─────────────────────────────────────────────
+# Unused / legacy code
+# ─────────────────────────────────────────────
+streamlit_app.py

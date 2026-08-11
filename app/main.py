@@ -729,7 +729,7 @@ async def ask_question_smart(request: QuestionRequest, raw_request: Request):
             from langchain_core.prompts import ChatPromptTemplate
             from app.rag import smart_format_docs
 
-            static_context = smart_format_docs(docs, query=request.question, intent=intent) if docs else "No static database context."
+            static_context = smart_format_docs(docs, query=request.question, intent=intent, intent_category=intent_res.get("intent_category", "")) if docs else "No static database context."
 
             # Merge static + live contexts into final prompt context
             context_parts = []

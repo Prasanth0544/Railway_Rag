@@ -68,6 +68,14 @@ def _p(pattern: str, category: str, confidence: float = 0.95) -> None:
     _PATTERNS.append((re.compile(pattern, re.IGNORECASE), category, confidence))
 
 
+# ── 0. Self-introduction / meta-questions (must come FIRST — these have NO
+#       railway keywords so would otherwise fall into OUT_OF_DOMAIN) ──────
+_p(r'\b(tell\s+me\s+about\s+yourself|who\s+are\s+you|what\s+(can|do)\s+you\s+do'
+   r'|introduce\s+yourself|your\s+capabilities?|what\s+is\s+railgpt'
+   r'|about\s+railgpt|what\s+can\s+railgpt\s+do|what\s+are\s+you'
+   r'|how\s+can\s+you\s+help|what\s+do\s+you\s+know)\b',
+   INTENT_GENERAL_INFO, 0.90)
+
 # ── 1. PNR (highest priority) ───────────────────────────────────────
 _p(r'\b\d{10}\b',                                           INTENT_PNR_STATUS, 1.00)
 _p(r'\bpnr\b',                                              INTENT_PNR_STATUS, 0.99)
