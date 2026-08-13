@@ -20,7 +20,7 @@ class Settings(BaseSettings):
 
     # Google Gemini
     GOOGLE_API_KEY: str = Field(default="", description="Gemini API key")
-    GEMINI_MODEL: str = Field(default="gemini-2.5-flash", description="Gemini model name")
+    GEMINI_MODEL: str = Field(default="gemini-3.6-flash", description="Gemini model name")
 
     # LM Studio (local)
     LOCAL_API_BASE: str = Field(default="http://localhost:1234/v1")

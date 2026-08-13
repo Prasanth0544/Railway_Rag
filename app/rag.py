@@ -326,7 +326,7 @@ def get_llm():
     """
     Return the configured LLM.
 
-    LLM_PROVIDER=gemini   → ChatGoogleGenerativeAI (gemini-3.1-flash)
+    LLM_PROVIDER=gemini   → ChatGoogleGenerativeAI (gemini-3.6-flash)
     LLM_PROVIDER=lmstudio → ChatOpenAI pointing at http://localhost:1234
     """
     provider = os.getenv("LLM_PROVIDER", "gemini").lower().strip()
@@ -348,7 +348,7 @@ def get_llm():
     else:  # Default: Gemini
         from langchain_google_genai import ChatGoogleGenerativeAI
         api_key    = os.getenv("GOOGLE_API_KEY", "")
-        model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        model_name = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
         logger.info(f"☁️  LLM: Google Gemini ({model_name})")
         return ChatGoogleGenerativeAI(

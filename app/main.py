@@ -388,7 +388,7 @@ async def health():
     _use_local = os.getenv("USE_LOCAL_EMBEDDINGS", "false").strip().lower() == "true"
     _embed     = "all-MiniLM-L6-v2" if _use_local else "gemini-embedding-001"
     _provider  = os.getenv("LLM_PROVIDER", "gemini")
-    _model     = os.getenv("LOCAL_MODEL_NAME", "") if _provider == "lmstudio" else os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
+    _model     = os.getenv("LOCAL_MODEL_NAME", "") if _provider == "lmstudio" else os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
     return {
         "status": "ok",
         "message": f"LLM: {_provider.upper()} | {_total} docs across {len(_cols)} collections",
@@ -438,7 +438,7 @@ async def ask_question(request: QuestionRequest):
             **result,
             response_time_ms=elapsed_ms,
             avg_relevance_score=avg_score,
-            llm_model=os.getenv("GEMINI_MODEL", os.getenv("LOCAL_MODEL_NAME", "gemini-3.1-flash-lite")),
+            llm_model=os.getenv("GEMINI_MODEL", os.getenv("LOCAL_MODEL_NAME", "gemini-3.6-flash")),
             embedding_model="all-MiniLM-L6-v2" if os.getenv("USE_LOCAL_EMBEDDINGS","false").lower()=="true" else "gemini-embedding-001" if os.getenv("USE_LOCAL_EMBEDDINGS","false").lower()=="true" else "gemini-embedding-001",
         )
     except Exception as e:
@@ -480,7 +480,7 @@ async def ask_question_stream(request: QuestionRequest):
                 "num_documents_retrieved": len(docs),
                 "avg_relevance_score": avg_score,
                 "sources": sources,
-                "llm_model": os.getenv("GEMINI_MODEL", os.getenv("LOCAL_MODEL_NAME", "gemini-3.1-flash-lite")),
+                "llm_model": os.getenv("GEMINI_MODEL", os.getenv("LOCAL_MODEL_NAME", "gemini-3.6-flash")),
                 "embedding_model": "all-MiniLM-L6-v2" if os.getenv("USE_LOCAL_EMBEDDINGS","false").lower()=="true" else "gemini-embedding-001",
             }
             yield f"data: {json.dumps(meta)}\n\n"
@@ -584,7 +584,7 @@ async def ask_question_smart(request: QuestionRequest, raw_request: Request):
                     "avg_relevance_score": 0.0,
                     "sources": [],
                     "warnings": [],
-                    "llm_model": os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"),
+                    "llm_model": os.getenv("GEMINI_MODEL", "gemini-3.6-flash"),
                     "embedding_model": "all-MiniLM-L6-v2" if os.getenv("USE_LOCAL_EMBEDDINGS","false").lower()=="true" else "gemini-embedding-001",
                 }
                 yield f"data: {json.dumps(meta)}\n\n"
@@ -719,7 +719,7 @@ async def ask_question_smart(request: QuestionRequest, raw_request: Request):
                 "avg_relevance_score": avg_score,
                 "sources": sources,
                 "warnings": warnings,
-                "llm_model": os.getenv("GEMINI_MODEL" if os.getenv("LLM_PROVIDER") == "gemini" else "LOCAL_MODEL_NAME", "gemini-2.5-flash"),
+                "llm_model": os.getenv("GEMINI_MODEL" if os.getenv("LLM_PROVIDER") == "gemini" else "LOCAL_MODEL_NAME", "gemini-3.6-flash"),
                 "embedding_model": "all-MiniLM-L6-v2" if os.getenv("USE_LOCAL_EMBEDDINGS","false").lower()=="true" else "gemini-embedding-001" if os.getenv("USE_LOCAL_EMBEDDINGS", "false").lower() == "true" else "gemini-embedding-001",
             }
             yield f"data: {json.dumps(meta)}\n\n"
@@ -868,7 +868,7 @@ async def ask_with_file(
 
         # Configure Gemini (new SDK — google.genai)
         client = genai.Client(api_key=api_key)
-        model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        model_name = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
         effective_question = question.strip()
 

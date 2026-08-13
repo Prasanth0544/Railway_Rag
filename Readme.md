@@ -273,7 +273,7 @@ Edit `.env` and add your values:
 ```env
 GOOGLE_API_KEY=your-gemini-api-key       # Get free at aistudio.google.com
 LLM_PROVIDER=gemini
-GEMINI_MODEL=gemini-2.5-flash
+GEMINI_MODEL=gemini-3.6-flash
 USE_LOCAL_EMBEDDINGS=false               # Uses Gemini cloud embeddings
 DATA_COLLECTIONS_DIR=path/to/your/csv_files
 
@@ -409,7 +409,7 @@ curl -X POST http://localhost:8000/ask \
 | `GOOGLE_API_KEY_1` … `_N` | — | Additional keys for embedding rotation (optional) |
 | `RAPIDAPI_KEY` | — | RapidAPI key for live train data on cloud |
 | `LLM_PROVIDER` | `gemini` | `gemini` or `lmstudio` (offline) |
-| `GEMINI_MODEL` | `gemini-2.5-flash` | Gemini model name |
+| `GEMINI_MODEL` | `gemini-3.6-flash` | Gemini model name |
 | `USE_LOCAL_EMBEDDINGS` | `false` | `true` = offline sentence-transformers, `false` = Gemini cloud |
 | `DATA_COLLECTIONS_DIR` | — | Path to CSV data files directory |
 | `LOCAL_API_BASE` | `http://localhost:1234/v1` | LM Studio server URL |
