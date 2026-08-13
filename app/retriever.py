@@ -200,7 +200,11 @@ class UnifiedRetriever:
         # Lazy store registry: collection name → Chroma object (or None = known but not yet opened)
         self.vector_stores: dict = {}
         self._discover_collections()
-        self._init_station_resolver()
+        # Station resolver is initialized lazily on first resolve call (saves ~50MB at startup)
+        self._station_resolver_initialized = False
+        self.station_names_to_code: dict = {}
+        self.all_station_names: list = []
+        self._sorted_station_names: list = []
 
     def _discover_collections(self) -> None:
         """Discover which collections exist — but do NOT load their HNSW indices yet.
@@ -243,50 +247,58 @@ class UnifiedRetriever:
         return self.vector_stores[name]
 
     def _init_station_resolver(self) -> None:
-        """Initialize station alias search maps using build_station_lookup."""
+        """Initialize station alias search maps.
+
+        Load order (first that works wins):
+        1. build_station_lookup() from CSV files (local dev with DATA_COLLECTIONS_DIR set)
+        2. data/station_codes.json  — compact pre-built file committed to git
+                                      (works on Railway/Render with no CSVs, no ChromaDB dump)
+
+        Called lazily on first resolve attempt — NOT at __init__ time — so startup
+        memory stays low on 512 MB containers.
+        """
+        if self._station_resolver_initialized:
+            return
+        self._station_resolver_initialized = True
         try:
-            import difflib
             from scripts.preprocess import build_station_lookup
-            
             lookup = build_station_lookup()
-            if not lookup and "stations" in self.vector_stores:
-                try:
-                    col = self.client.get_collection("stations")
-                    data = col.get(limit=15000, include=["metadatas"])
-                    if data and data.get("metadatas"):
-                        for meta in data["metadatas"]:
-                            code = meta.get("station_code")
-                            name = meta.get("station_name")
-                            if code and name:
-                                lookup[code] = {"name": name, "aka": []}
-                except Exception as exc:
-                    logger.warning(f"[WARN] Failed to load stations from ChromaDB fallback: {exc}")
+
+            # Fallback: pre-built compact JSON (committed to git, ~384 KB)
+            # Avoids the old col.get(limit=15000) ChromaDB dump that caused OOM.
+            if not lookup:
+                json_path = os.path.join(
+                    os.path.dirname(os.path.dirname(__file__)), "data", "station_codes.json"
+                )
+                if os.path.exists(json_path):
+                    import json as _json
+                    with open(json_path, encoding="utf-8") as _f:
+                        lookup = _json.load(_f)
+                    logger.info(f"[Resolver] Loaded {len(lookup)} stations from station_codes.json")
+                else:
+                    logger.info("[Resolver] No station data found — resolver disabled (keyword search active)")
+                    return
 
             self.station_names_to_code = {}
             self.all_station_names = []
-            
+
             for code, info in lookup.items():
                 code_lower = code.lower()
                 self.station_names_to_code[code_lower] = (info.get("name", code), code)
-                
+
                 name = info.get("name", "")
                 if name:
                     name_lower = name.lower()
                     self.station_names_to_code[name_lower] = (name, code)
                     self.all_station_names.append(name)
-                
+
                 for aka in info.get("aka", []):
                     aka_lower = aka.lower()
-                    # Use the OFFICIAL station name (not the alias) as canonical name.
-                    # Route documents use official names like "Visakhapatnam",
-                    # not AKAs like "Vizag", so $contains must search the official name.
                     official_name = name if name else aka
                     self.station_names_to_code[aka_lower] = (official_name, code)
                     self.all_station_names.append(aka)
-                    
+
             # Also index the first significant word of each multi-word station name
-            # so queries like "Vijayawada" match "Vijayawada Junction" (BZA)
-            # and "Hyderabad" matches "Hyderabad Deccan Nampally" (HYB).
             _noise = {"new", "old", "north", "south", "east", "west", "central",
                       "junction", "road", "halt", "cabin", "town", "city"}
             for code, info in lookup.items():
@@ -300,21 +312,20 @@ class UnifiedRetriever:
                         self.station_names_to_code[first] = (name, code)
                         self.all_station_names.append(first)
 
-            # Pre-sort station names by length descending ONCE (avoids re-sorting on every query)
+            # Pre-sort station names by length descending ONCE
             self._sorted_station_names = sorted(self.station_names_to_code.keys(), key=len, reverse=True)
-
             logger.info(f"[Resolver] Loaded {len(self.station_names_to_code)} names/AKAs for fuzzy resolution")
         except Exception as e:
             logger.warning(f"[WARN] Failed to load station lookup for resolver: {e}")
-            self.station_names_to_code = {}
-            self.all_station_names = []
-            self._sorted_station_names = []
 
     def _resolve_station(self, query: str) -> tuple[str, str] | None:
         """
         Fuzzy match query text against station names or codes.
         Returns: tuple of (canonical_name, station_code) or None
         """
+        # Lazy init — defer CSV loading to first actual resolve call
+        if not self._station_resolver_initialized:
+            self._init_station_resolver()
         if not self.station_names_to_code:
             return None
 
@@ -663,11 +674,23 @@ class UnifiedRetriever:
         # The fuzzy resolver misses short codes (< 4 chars) and fails when map is empty.
         raw_codes = re.findall(r'\b([a-zA-Z]{2,5})\b', query)
         _code_noise = {
+            # Short English pronouns/verbs that collide with 2-letter station codes
+            "ME", "HE", "IT", "DO", "GO", "BE", "NO", "IF", "SO",
+            "US", "HI", "OH", "AM", "WE", "HIM", "HER", "HIS", "ITS",
+            "OUR", "NOT", "BUT", "ALL", "ANY", "CAN", "HAS", "HAD",
+            "WAS", "DID", "LET", "PUT", "SET", "GOT", "SAY", "ASK",
+            "USE", "OUT", "OFF", "YES", "NOW",
+            # Existing noise
             "AC", "DC", "ID", "OK", "OR", "IS", "AT", "IN", "OF",
             "TO", "BY", "UP", "ON", "AS", "AN", "MY", "WE", "THE",
-            "AND", "FOR", "FROM", "VIA", "ARE", "GET", "NOW", "DAY",
+            "AND", "FOR", "FROM", "VIA", "ARE", "GET", "DAY",
             "TRAIN", "TRAINS", "ROUTE", "STOP", "STOPS",
+            # Question words that appear at start of queries
+            "GIVE", "TELL", "SHOW", "FIND", "LIST", "WHAT", "WHICH",
+            "WHEN", "WHERE", "DOES", "WILL", "THAT", "THIS", "THEM",
+            "ABOUT", "THEIR", "THERE", "THESE", "THOSE",
         }
+
         for raw in raw_codes:
             code = raw.upper()          # normalize to uppercase (NRT, BVRT, BZA)
             if code in _code_noise:
