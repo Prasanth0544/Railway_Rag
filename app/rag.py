@@ -4,10 +4,14 @@ rag.py — RAG Chain with LLM Provider Switching
 Supports:
   1. Google Gemini API (cloud — default for deployment)
   2. LM Studio local server (localhost:1234 — free, offline, for development)
+  3. OpenRouter (cloud — stealth/ox-alpha or any OpenRouter model)
 
 Set LLM_PROVIDER in .env to switch:
   LLM_PROVIDER=gemini      → uses GOOGLE_API_KEY
   LLM_PROVIDER=lmstudio    → uses LOCAL_API_BASE (no key needed)
+  LLM_PROVIDER=openrouter  → uses OPENROUTER_API_KEY + OPENROUTER_MODEL
+
+Note: Embeddings always use Gemini gemini-embedding-001 regardless of LLM_PROVIDER.
 """
 
 import os
@@ -319,15 +323,19 @@ HUMAN_PROMPT = "{question}"
 
 
 # ─────────────────────────────────────────────
-# LLM FACTORY — Gemini or LM Studio
+# LLM FACTORY — Gemini, LM Studio, or OpenRouter
 # ─────────────────────────────────────────────
 
 def get_llm():
     """
     Return the configured LLM.
 
-    LLM_PROVIDER=gemini   → ChatGoogleGenerativeAI (gemini-3.6-flash)
-    LLM_PROVIDER=lmstudio → ChatOpenAI pointing at http://localhost:1234
+    LLM_PROVIDER=gemini      → ChatGoogleGenerativeAI (gemini-3.6-flash)
+    LLM_PROVIDER=lmstudio    → ChatOpenAI pointing at http://localhost:1234
+    LLM_PROVIDER=openrouter  → ChatOpenAI pointing at https://openrouter.ai/api/v1
+                               Uses OPENROUTER_API_KEY and OPENROUTER_MODEL (default: stealth/ox-alpha)
+
+    Embeddings always use Gemini gemini-embedding-001 regardless of this setting.
     """
     provider = os.getenv("LLM_PROVIDER", "gemini").lower().strip()
 
@@ -343,6 +351,27 @@ def get_llm():
             model=model,
             temperature=0.3,
             max_tokens=1024,
+        )
+
+    elif provider == "openrouter":
+        from langchain_openai import ChatOpenAI
+        api_key    = os.getenv("OPENROUTER_API_KEY", "")
+        model_name = os.getenv("OPENROUTER_MODEL", "stealth/ox-alpha")
+
+        if not api_key:
+            raise RuntimeError("OPENROUTER_API_KEY is not set. Cannot use LLM_PROVIDER=openrouter.")
+
+        logger.info(f"🌐  LLM: OpenRouter ({model_name})")
+        return ChatOpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=api_key,
+            model=model_name,
+            temperature=0.3,
+            max_tokens=8192,
+            default_headers={
+                "HTTP-Referer": "https://github.com/Prasanth0544/Railway_Rag",
+                "X-Title": "RailGPT — Indian Railways Assistant",
+            },
         )
 
     else:  # Default: Gemini

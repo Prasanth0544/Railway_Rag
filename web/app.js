@@ -613,18 +613,36 @@ async function checkHealth() {
       }
     }
     
-    // Parse System Information details
+    // Parse System Information — auto-format per LLM provider
     if (data.llm_provider) {
-      const displayProvider = data.llm_provider.toUpperCase();
-      const val = document.getElementById('sysLLM');
-      if (val) val.textContent = `${displayProvider} (${data.llm_model})`;
-      
-      const flowVal = document.getElementById('flowLLM');
-      if (flowVal) flowVal.textContent = data.llm_model;
+      const provider = data.llm_provider.toUpperCase();
+      const model    = data.llm_model || '';
+
+      // Provider → friendly label + badge CSS class
+      const PROVIDER_META = {
+        'GEMINI':     { label: 'Gemini',     cls: 'llm-badge-gemini',     icon: '✦' },
+        'OPENROUTER': { label: 'OpenRouter', cls: 'llm-badge-openrouter', icon: '⇌' },
+        'LMSTUDIO':   { label: 'LM Studio',  cls: 'llm-badge-lmstudio',   icon: '⚙' },
+      };
+      const meta = PROVIDER_META[provider] || { label: provider, cls: 'llm-badge-gemini', icon: '◉' };
+
+      // Sidebar: "OpenRouter (stealth/ox-alpha)"
+      const sysLLM = document.getElementById('sysLLM');
+      if (sysLLM) sysLLM.textContent = `${meta.label} (${model})`;
+
+      // RAG flow badge: update text + swap CSS class for colour
+      const flowLLM = document.getElementById('flowLLM');
+      if (flowLLM) {
+        flowLLM.textContent = `${meta.icon} ${model}`;
+        // Swap badge class — remove all known classes first
+        flowLLM.classList.remove('llm-badge-gemini', 'llm-badge-openrouter', 'llm-badge-lmstudio');
+        flowLLM.classList.add(meta.cls);
+        flowLLM.title = `Provider: ${meta.label}`;
+      }
     }
     if (data.embedding_model) {
       const val = document.getElementById('sysEmbed');
-      if (val) val.textContent = data.embedding_model.split(' ')[0]; // keep it concise
+      if (val) val.textContent = data.embedding_model.split(' ')[0]; // keep concise
     }
     if (data.vector_db) {
       const val = document.getElementById('sysVector');

@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     """Application settings loaded from .env file."""
 
     # LLM Provider
-    LLM_PROVIDER: str = Field(default="gemini", description="gemini or lmstudio")
+    LLM_PROVIDER: str = Field(default="gemini", description="gemini, lmstudio, or openrouter")
 
     # Google Gemini
     GOOGLE_API_KEY: str = Field(default="", description="Gemini API key")

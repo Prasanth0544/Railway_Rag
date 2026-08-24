@@ -8,30 +8,37 @@ services:
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1 --timeout-keep-alive 75
     envVars:
       - key: GOOGLE_API_KEY
-        sync: false            # Set manually in Render dashboard
+        sync: false            # Set manually in Render dashboard (required for gemini-embedding-001)
       - key: LLM_PROVIDER
-        value: gemini
+        value: gemini          # gemini | openrouter | lmstudio
       - key: GEMINI_MODEL
         value: gemini-3.6-flash
+      - key: RAPIDAPI_KEY
+        sync: false            # Set in Render dashboard — needed for live train data from cloud IPs
+                               # Get free key at: https://rapidapi.com/search/indian%20railway
       - key: PYTHONUNBUFFERED
         value: "1"             # Force logs to flush immediately
       - key: PYTHONDONTWRITEBYTECODE
         value: "1"             # Skip .pyc file generation — saves disk & RAM
       - key: MALLOC_ARENA_MAX
         value: "2"             # Limit glibc memory arenas on Linux — saves ~30-50MB
-      - key: RAPIDAPI_KEY
-        sync: false            # Optional: set in Render dashboard for reliable live train tracking from cloud IPs
-                               # Get free key at: https://rapidapi.com/search/indian%20railway
       - key: CHROMA_TELEMETRY
-        value: "FALSE"         # Disable ChromaDB telemetry pings — saves network + RAM overhead
+        value: "FALSE"         # Disable ChromaDB telemetry pings
+
+# ── To switch to OpenRouter on Render ─────────────────────────────────────
+# Change LLM_PROVIDER to openrouter and add these two vars in dashboard:
+#   OPENROUTER_API_KEY = your-key-from-openrouter.ai
+#   OPENROUTER_MODEL   = stealth/ox-alpha
+# GOOGLE_API_KEY is still required (used for gemini-embedding-001 embeddings)
+# ──────────────────────────────────────────────────────────────────────────
 
 # Memory budget on Render free tier (512MB):
-#   Python + FastAPI + libs : ~100MB
+#   Python + FastAPI + libs                          : ~100MB
 #   ChromaDB (rules/trains/stations/references HNSW) : ~100MB
-#   train_routes keyword-only (HNSW skipped, saves ~200MB) : ~10MB
-#   Response cache + session history : ~20MB
-#   Headroom : ~280MB  ← safe under 512MB limit
+#   train_routes keyword-only (HNSW skipped)         :  ~10MB  saves ~200MB
+#   Response cache + session history                 :  ~20MB
+#   Headroom                                         : ~280MB  safe under 512MB limit
 #
-# train_routes uses keyword + exact search only (semantic search skipped
-# because its 3072-dim HNSW would cost ~200MB and fails anyway on Render
-# due to embedding dimension mismatch vs. the local 384-dim model).
+# train_routes uses keyword + exact search only — semantic HNSW is skipped
+# because the 3072-dim index would cost ~200MB and exceed the free tier RAM limit.
+
