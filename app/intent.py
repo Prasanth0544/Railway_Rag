@@ -70,10 +70,16 @@ def _p(pattern: str, category: str, confidence: float = 0.95) -> None:
 
 # ── 0. Self-introduction / meta-questions (must come FIRST — these have NO
 #       railway keywords so would otherwise fall into OUT_OF_DOMAIN) ──────
-_p(r'\b(tell\s+me\s+about\s+yourself|who\s+are\s+you|what\s+(can|do)\s+you\s+do'
+_p(r'\b(tell\s+me\s+about\s+yourself|tell\s+me\s+about\s+you'
+   r'|who\s+are\s+you|what\s+(can|do)\s+you\s+(do|help)'
+   r'|what\s+(can|do)\s+you\s+do\s+for\s+me|what\s+you\s+can\s+do'
    r'|introduce\s+yourself|your\s+capabilities?|what\s+is\s+railgpt'
    r'|about\s+railgpt|what\s+can\s+railgpt\s+do|what\s+are\s+you'
-   r'|how\s+can\s+you\s+help|what\s+do\s+you\s+know)\b',
+   r'|how\s+can\s+you\s+help(\s+me)?|what\s+do\s+you\s+know'
+   r'|who\s+(built|made|created|developed|designed)\s+you'
+   r'|how\s+do\s+you\s+work|are\s+you\s+an?\s+(ai|bot|assistant|chatbot)'
+   r'|your\s+features?|what\s+are\s+your\s+features?'
+   r'|help\s+me\s+understand\s+what\s+you\s+can\s+do)\b',
    INTENT_GENERAL_INFO, 0.90)
 
 # ── 1. PNR (highest priority) ───────────────────────────────────────

@@ -4,8 +4,7 @@ retriever.py — ChromaDB Unified Retriever
 Connects to the persistent ChromaDB instance and searches across
 all collections: railway_rules, trains, stations, train_routes, references.
 
-Supports both Gemini embeddings (cloud) and local sentence-transformers
-(for fully offline operation with LM Studio).
+Uses Gemini embeddings (gemini-embedding-001, 3072 dims) exclusively.
 """
 
 from __future__ import annotations
@@ -58,32 +57,23 @@ KEYWORD_SCAN_LIMIT = 300
 
 def get_embeddings():
     """
-    Return the embedding model based on .env settings.
+    Return the Gemini embedding model (models/gemini-embedding-001, 3072 dims).
 
-    USE_LOCAL_EMBEDDINGS=true  → sentence-transformers (100% offline)
-    USE_LOCAL_EMBEDDINGS=false → Gemini embedding API (cloud)
+    Requires GOOGLE_API_KEY to be set in .env.
     """
-    use_local = os.getenv("USE_LOCAL_EMBEDDINGS", "false").lower() == "true"
     api_key = os.getenv("GOOGLE_API_KEY", "")
 
-    if not use_local and api_key and api_key not in ("your-gemini-api-key-here", ""):
+    if api_key and api_key not in ("your-gemini-api-key-here", ""):
         from langchain_google_genai import GoogleGenerativeAIEmbeddings  # type: ignore[import-untyped]
-        logger.info("[CLOUD] Using Gemini embeddings (models/gemini-embedding-001)")
+        logger.info("[CLOUD] Using Gemini embeddings (models/gemini-embedding-001, 3072 dims)")
         return GoogleGenerativeAIEmbeddings(
             model="models/gemini-embedding-001",
             google_api_key=api_key,
         )
 
-    # Local offline embeddings
-    try:
-        from langchain_huggingface import HuggingFaceEmbeddings  # type: ignore[import-untyped]
-    except ImportError:
-        from langchain_community.embeddings import HuggingFaceEmbeddings  # type: ignore[import-untyped]
-
-    logger.info("[LOCAL] Using sentence-transformers/all-MiniLM-L6-v2 (offline, no rate limits)")
-    return HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2",
-        model_kwargs={"device": "cpu", "local_files_only": False},
+    raise RuntimeError(
+        "GOOGLE_API_KEY is not set or invalid. "
+        "Set it in your .env file to use Gemini embeddings (gemini-embedding-001, 3072 dims)."
     )
 
 

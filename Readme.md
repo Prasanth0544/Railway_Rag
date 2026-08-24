@@ -274,7 +274,6 @@ Edit `.env` and add your values:
 GOOGLE_API_KEY=your-gemini-api-key       # Get free at aistudio.google.com
 LLM_PROVIDER=gemini
 GEMINI_MODEL=gemini-3.6-flash
-USE_LOCAL_EMBEDDINGS=false               # Uses Gemini cloud embeddings
 DATA_COLLECTIONS_DIR=path/to/your/csv_files
 
 # Optional — only needed for cloud deployments (NTES is blocked on cloud IPs)
@@ -410,7 +409,7 @@ curl -X POST http://localhost:8000/ask \
 | `RAPIDAPI_KEY` | — | RapidAPI key for live train data on cloud |
 | `LLM_PROVIDER` | `gemini` | `gemini` or `lmstudio` (offline) |
 | `GEMINI_MODEL` | `gemini-3.6-flash` | Gemini model name |
-| `USE_LOCAL_EMBEDDINGS` | `false` | `true` = offline sentence-transformers, `false` = Gemini cloud |
+| `USE_LOCAL_EMBEDDINGS` | ~~removed~~ | Supported in an earlier stage; project now uses Gemini embeddings exclusively |
 | `DATA_COLLECTIONS_DIR` | — | Path to CSV data files directory |
 | `LOCAL_API_BASE` | `http://localhost:1234/v1` | LM Studio server URL |
 | `HF_HUB_OFFLINE` | `0` | Set to `1` to block all HuggingFace network calls |

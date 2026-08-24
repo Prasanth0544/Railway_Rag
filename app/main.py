@@ -74,7 +74,7 @@ class AnswerResponse(BaseModel):
     response_time_ms: float = 0.0
     avg_relevance_score: float = 0.0
     llm_model: str = ""
-    embedding_model: str = "all-MiniLM-L6-v2" if os.getenv("USE_LOCAL_EMBEDDINGS","false").lower()=="true" else "gemini-embedding-001"
+    embedding_model: str = "gemini-embedding-001"
 
 
 class HealthResponse(BaseModel):
@@ -83,7 +83,7 @@ class HealthResponse(BaseModel):
     version: str
     llm_provider: str = ""
     llm_model: str = ""
-    embedding_model: str = "all-MiniLM-L6-v2" if os.getenv("USE_LOCAL_EMBEDDINGS","false").lower()=="true" else "gemini-embedding-001"
+    embedding_model: str = "gemini-embedding-001"
     vector_db: str = "ChromaDB"
     total_documents: int = 0
     collections: dict = {}
@@ -186,7 +186,6 @@ def _set_cached_response(question: str, meta: dict, answer: str):
 
 
 import threading
-import asyncio
 
 _rag_lock = threading.Lock()
 _rag_loading = False
@@ -233,7 +232,6 @@ def _warmup_rag_chain():
 
 def _ensure_rag_chain():
     """Ensure RAG chain is loaded — waits if background warmup is still running."""
-    global rag_chain
     if rag_chain is not None:
         return
     # If warmup is still in progress, wait for it (up to 120s)
@@ -385,8 +383,7 @@ async def health():
                 _total += _n
         except Exception:
             pass
-    _use_local = os.getenv("USE_LOCAL_EMBEDDINGS", "false").strip().lower() == "true"
-    _embed     = "all-MiniLM-L6-v2" if _use_local else "gemini-embedding-001"
+    _embed     = "gemini-embedding-001"
     _provider  = os.getenv("LLM_PROVIDER", "gemini")
     _model     = os.getenv("LOCAL_MODEL_NAME", "") if _provider == "lmstudio" else os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
     return {
@@ -439,7 +436,7 @@ async def ask_question(request: QuestionRequest):
             response_time_ms=elapsed_ms,
             avg_relevance_score=avg_score,
             llm_model=os.getenv("GEMINI_MODEL", os.getenv("LOCAL_MODEL_NAME", "gemini-3.6-flash")),
-            embedding_model="all-MiniLM-L6-v2" if os.getenv("USE_LOCAL_EMBEDDINGS","false").lower()=="true" else "gemini-embedding-001" if os.getenv("USE_LOCAL_EMBEDDINGS","false").lower()=="true" else "gemini-embedding-001",
+            embedding_model="gemini-embedding-001",
         )
     except Exception as e:
         raise HTTPException(
@@ -481,7 +478,7 @@ async def ask_question_stream(request: QuestionRequest):
                 "avg_relevance_score": avg_score,
                 "sources": sources,
                 "llm_model": os.getenv("GEMINI_MODEL", os.getenv("LOCAL_MODEL_NAME", "gemini-3.6-flash")),
-                "embedding_model": "all-MiniLM-L6-v2" if os.getenv("USE_LOCAL_EMBEDDINGS","false").lower()=="true" else "gemini-embedding-001",
+                "embedding_model": "gemini-embedding-001",
             }
             yield f"data: {json.dumps(meta)}\n\n"
 
@@ -585,7 +582,7 @@ async def ask_question_smart(request: QuestionRequest, raw_request: Request):
                     "sources": [],
                     "warnings": [],
                     "llm_model": os.getenv("GEMINI_MODEL", "gemini-3.6-flash"),
-                    "embedding_model": "all-MiniLM-L6-v2" if os.getenv("USE_LOCAL_EMBEDDINGS","false").lower()=="true" else "gemini-embedding-001",
+                    "embedding_model": "gemini-embedding-001",
                 }
                 yield f"data: {json.dumps(meta)}\n\n"
 
@@ -720,7 +717,7 @@ async def ask_question_smart(request: QuestionRequest, raw_request: Request):
                 "sources": sources,
                 "warnings": warnings,
                 "llm_model": os.getenv("GEMINI_MODEL" if os.getenv("LLM_PROVIDER") == "gemini" else "LOCAL_MODEL_NAME", "gemini-3.6-flash"),
-                "embedding_model": "all-MiniLM-L6-v2" if os.getenv("USE_LOCAL_EMBEDDINGS","false").lower()=="true" else "gemini-embedding-001" if os.getenv("USE_LOCAL_EMBEDDINGS", "false").lower() == "true" else "gemini-embedding-001",
+                "embedding_model": "gemini-embedding-001",
             }
             yield f"data: {json.dumps(meta)}\n\n"
 
@@ -936,7 +933,7 @@ async def ask_with_file(
                 "response_time_ms": elapsed_ms,
                 "avg_relevance_score": 0.0,
                 "llm_model": model_name,
-                "embedding_model": "all-MiniLM-L6-v2" if os.getenv("USE_LOCAL_EMBEDDINGS","false").lower()=="true" else "gemini-embedding-001",
+                "embedding_model": "gemini-embedding-001",
                 "file_name": file.filename,
                 "file_type": content_type,
                 "mode": "multi-modal",
@@ -1003,7 +1000,7 @@ async def ask_with_file(
             "response_time_ms": elapsed_ms,
             "avg_relevance_score": avg_score,
             "llm_model": model_name,
-            "embedding_model": "all-MiniLM-L6-v2" if os.getenv("USE_LOCAL_EMBEDDINGS","false").lower()=="true" else "gemini-embedding-001",
+            "embedding_model": "gemini-embedding-001",
             "file_name": file.filename,
             "file_type": content_type,
             "mode": "multi-modal",

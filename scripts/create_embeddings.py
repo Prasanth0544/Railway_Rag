@@ -91,9 +91,8 @@ def _clear_checkpoint(collection: str) -> None:
         pass
 
 
-# Batch size — auto-selected based on embedding provider
-_use_local = os.getenv("USE_LOCAL_EMBEDDINGS", "false").lower() == "true"
-BATCH_SIZE = 256 if _use_local else 50   # Gemini: 100 req/min → 50 docs/batch with sleep
+# Batch size for Gemini cloud embeddings (100 req/min → 50 docs/batch with sleep)
+BATCH_SIZE = 50
 
 
 # ─────────────────────────────────────────────
@@ -136,34 +135,18 @@ def _make_gemini_embeddings(api_key: str):
 
 def get_embeddings():
     """
-    Return the embedding model based on USE_LOCAL_EMBEDDINGS in .env.
-
-    USE_LOCAL_EMBEDDINGS=true  → sentence-transformers (offline, no limits)
-    USE_LOCAL_EMBEDDINGS=false → Gemini embedding API with multi-key rotation
+    Return Gemini embedding model (gemini-embedding-001, 3072 dims) with multi-key rotation.
+    Requires at least one GOOGLE_API_KEY to be set in .env.
     """
     global _api_keys, _key_index
-    use_local = os.getenv("USE_LOCAL_EMBEDDINGS", "false").lower() == "true"
-
-    if use_local:
-        try:
-            from langchain_huggingface import HuggingFaceEmbeddings  # type: ignore[import-untyped]
-        except ImportError:
-            from langchain_community.embeddings import HuggingFaceEmbeddings  # type: ignore[import-untyped]
-
-        print("   [LOCAL] Using sentence-transformers/all-MiniLM-L6-v2 — 100% offline, no rate limits")
-        return HuggingFaceEmbeddings(
-            model_name="sentence-transformers/all-MiniLM-L6-v2",
-            model_kwargs={"device": "cpu"},
-            encode_kwargs={"batch_size": 256},
-        )
 
     # Cloud: Gemini with key rotation
     _api_keys = _load_api_keys()
     if not _api_keys:
-        print("[ERROR] No GOOGLE_API_KEY found. Set it in .env or use USE_LOCAL_EMBEDDINGS=true")
+        print("[ERROR] No GOOGLE_API_KEY found. Set it in .env")
         sys.exit(1)
     _key_index = 0
-    print(f"   [CLOUD] Using Gemini gemini-embedding-001 — {len(_api_keys)} API key(s) loaded")
+    print(f"   [CLOUD] Using Gemini gemini-embedding-001 (3072 dims) — {len(_api_keys)} API key(s) loaded")
     return _make_gemini_embeddings(_api_keys[0])
 
 
@@ -211,7 +194,6 @@ def create_collection(
             pass
 
     global _key_index, _exhausted_keys
-    use_local = os.getenv("USE_LOCAL_EMBEDDINGS", "false").lower() == "true"
     total = len(documents)
     stored = resume_from
     vector_store = None
@@ -251,7 +233,7 @@ def create_collection(
 
                 # Small delay for Gemini cloud (per-minute rate limits)
                 # 50 docs/batch → ~40 batches/min at 1.5s delay → well under 100 req/min
-                if not use_local and batch_end < total:
+                if batch_end < total:
                     time.sleep(1.5)
                 break
 
@@ -276,7 +258,7 @@ def create_collection(
                 # (Google just isn't returning PerDay in the error). Rotate it.
                 if is_per_minute:
                     consecutive_rate_hits += 1
-                    if consecutive_rate_hits >= 3 and not use_local and len(_api_keys) > 1:
+                    if consecutive_rate_hits >= 3 and len(_api_keys) > 1:
                         # Force-rotate: this key is stuck, likely daily-exhausted
                         _exhausted_keys.add(_key_index)
                         found_fresh = False
@@ -305,7 +287,7 @@ def create_collection(
 
                 # ── Case 2: Per-DAY quota exhausted (1000 req/day) ────────────
                 # Mark this key as truly exhausted and rotate to a fresh one.
-                if is_daily_quota and not use_local and len(_api_keys) > 1:
+                if is_daily_quota and len(_api_keys) > 1:
                     _exhausted_keys.add(_key_index)   # mark current key as exhausted
 
                     # Find next non-exhausted key
@@ -368,9 +350,7 @@ def main() -> None:
         load_reference_documents,
     )
 
-    use_local = os.getenv("USE_LOCAL_EMBEDDINGS", "false").lower() == "true"
-    mode = "Offline (sentence-transformers)" if use_local else "Cloud (Gemini)"
-    print(f"\n[INIT] Embeddings: {mode}")
+    print("\n[INIT] Embeddings: Cloud (Gemini gemini-embedding-001, 3072 dims)")
     embeddings = get_embeddings()
 
     print(f"\n[DB]   ChromaDB: {CHROMA_DB_DIR}")

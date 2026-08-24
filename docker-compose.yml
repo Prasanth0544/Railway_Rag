@@ -9,8 +9,7 @@ services:
     environment:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - LLM_PROVIDER=gemini
-      - GEMINI_MODEL=gemini-3.1-flash-lite
-      - USE_LOCAL_EMBEDDINGS=false
+      - GEMINI_MODEL=gemini-3.6-flash
     volumes:
       - ./chroma_db:/app/chroma_db
       - ./data:/app/data

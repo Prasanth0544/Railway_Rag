@@ -21,11 +21,8 @@ pandas
 python-dotenv
 python-multipart                # For FastAPI file uploads (image/PDF)
 pydantic-settings               # Config validation (app/config.py)
+beautifulsoup4                  # HTML scraper for PNR fallback (pnr_client.py)
 
 # ── Multi-Modal (Gemini Vision) ───────────────────────
 google-genai                    # New unified Gemini SDK (replaces deprecated google-generativeai)
 Pillow                          # Image processing for multi-modal uploads (PNG/JPG/WEBP)
-
-# ── Local Embeddings (DISABLED on Render — saves ~700MB disk + ~400MB RAM) ────
-# sentence-transformers==3.4.1   # ← Only needed if USE_LOCAL_EMBEDDINGS=true (local dev)
-#                                  Install manually: pip install sentence-transformers

@@ -13,12 +13,6 @@ services:
         value: gemini
       - key: GEMINI_MODEL
         value: gemini-3.6-flash
-      - key: USE_LOCAL_EMBEDDINGS
-        value: "false"        # Gemini cloud embeddings (3072-dim) — no local model loaded
-      - key: HF_HUB_OFFLINE
-        value: "1"             # Block HuggingFace downloads — no local models needed
-      - key: TRANSFORMERS_OFFLINE
-        value: "1"             # Block transformers model downloads
       - key: PYTHONUNBUFFERED
         value: "1"             # Force logs to flush immediately
       - key: PYTHONDONTWRITEBYTECODE

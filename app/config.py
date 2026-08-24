@@ -26,15 +26,8 @@ class Settings(BaseSettings):
     LOCAL_API_BASE: str = Field(default="http://localhost:1234/v1")
     LOCAL_MODEL_NAME: str = Field(default="google/gemma-2-9b")
 
-    # Embeddings
-    USE_LOCAL_EMBEDDINGS: bool = Field(default=True, description="Use sentence-transformers offline")
-
-    # Data
-    DATA_COLLECTIONS_DIR: str = Field(default="", description="Path to CSV data files")
-
-    # HuggingFace
-    HF_HUB_OFFLINE: int = Field(default=1)
-    TRANSFORMERS_OFFLINE: int = Field(default=1)
+    # Embeddings — always Gemini (gemini-embedding-001, 3072 dims)
+    # HuggingFace / local models are not used.
 
     class Config:
         env_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
