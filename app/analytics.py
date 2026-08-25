@@ -1,8 +1,8 @@
 """
 analytics.py — Query Analytics Logger
 
-Logs every query with intent, retrieval stats, response time, and errors
-to a JSONL file for offline analysis.
+Builds query entry dicts. Storage is handled exclusively by MongoDB Atlas.
+JSONL file writing has been removed — all data lives in Railway_Rag.query_logs.
 """
 
 import json
@@ -56,12 +56,9 @@ def log_query(
         "context_strategy": context_strategy,
     }
 
-    try:
-        with _write_lock:
-            with open(ANALYTICS_LOG_FILE, "a", encoding="utf-8") as f:
-                f.write(json.dumps(entry) + "\n")
-    except Exception as e:
-        logger.warning(f"[ANALYTICS] Failed to write log: {e}")
+    # MongoDB is the sole storage — no local JSONL write
+    # (insert_query_log is called directly in main.py after this)
+    logger.debug("[ANALYTICS] Query logged: intent=%s rt=%.0fms", intent, response_time_ms)
 
 
 def get_stats() -> dict[str, Any]:

@@ -1202,7 +1202,7 @@ async def get_station(station_code: str):
 
 
 
-# â”€â”€ Admin Stats Endpoint (Phase 5B) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Admin Stats Endpoint (Phase 5B) ──────────────────────────────────────────
 
 @app.get("/admin/stats", tags=["Admin"])
 async def get_admin_stats():
@@ -1223,10 +1223,6 @@ async def get_admin_stats():
 
 # ── Feedback endpoints ────────────────────────────────────────────────────────
 
-import threading as _threading
-_FEEDBACK_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "feedback.jsonl")
-_feedback_lock = _threading.Lock()
-
 class FeedbackRequest(BaseModel):
     question: str = Field(..., max_length=500)
     answer_preview: str = Field("", max_length=300)
@@ -1238,7 +1234,7 @@ class FeedbackRequest(BaseModel):
 async def submit_feedback(req: FeedbackRequest):
     """
     Store user thumbs-up / thumbs-down rating for an answer.
-    Appends to feedback.jsonl (one JSON object per line).
+    Saved exclusively to MongoDB Atlas (Railway_Rag.feedback collection).
     """
     import time as _time
     if req.rating not in ("up", "down"):
@@ -1252,23 +1248,10 @@ async def submit_feedback(req: FeedbackRequest):
         "comment": req.comment[:500] if req.comment else "",
         "session_id": req.session_id,
     }
-    try:
-        with _feedback_lock:
-            with open(_FEEDBACK_FILE, "a", encoding="utf-8") as f:
-                import json as _json
-                f.write(_json.dumps(entry) + "\n")
-    except Exception as e:
-        logger.warning(f"[FEEDBACK] Write failed: {e}")
-        raise HTTPException(status_code=500, detail="Could not save feedback")
-
-    # Mirror to MongoDB Atlas (non-blocking, best-effort)
-    try:
-        from app import mongodb as _mongo
-        _mongo.insert_feedback(dict(entry))
-    except Exception:
-        pass
-
+    # MongoDB Atlas — sole storage
     from app import mongodb as _mongo
+    _mongo.insert_feedback(entry)
+
     return {"status": "ok", "rating": req.rating, "stored_in_mongo": _mongo.is_online()}
 
 

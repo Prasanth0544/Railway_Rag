@@ -1514,12 +1514,21 @@ textarea::placeholder { color: var(--ink3); }
 .feedback-comment-actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
+  gap: 8px;
 }
-.feedback-comment-hint {
-  font-size: 0.72rem;
+.feedback-skip-btn {
+  padding: 5px 12px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: transparent;
   color: var(--ink3);
+  font-size: 0.8rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background var(--t), color var(--t);
 }
+.feedback-skip-btn:hover { background: var(--surface2); color: var(--ink1); }
 .feedback-submit-btn {
   padding: 5px 14px;
   border-radius: 7px;

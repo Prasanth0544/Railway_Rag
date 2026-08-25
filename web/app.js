@@ -203,26 +203,38 @@ async function handleFeedbackClick(btn, rating) {
   card.querySelectorAll('.feedback-btn').forEach(b => b.disabled = true);
   btn.classList.add(rating === 'up' ? 'feedback-up--active' : 'feedback-down--active');
 
-  // Show inline comment box below the feedback bar
+  const question      = card.dataset.question || '';
+  const answerPreview = card.querySelector('.answer-text')?.innerText?.slice(0, 300) || '';
+  const sessionId     = window._sessionId || 'anon';
+
+  // ── Step 1: Save rating IMMEDIATELY so "just leaving" always counts ──────
+  try {
+    await fetch(`${getBase()}/feedback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question, answer_preview: answerPreview, rating, comment: '', session_id: sessionId }),
+    });
+  } catch (_) { /* silent fail */ }
+
+  // ── Step 2: Show comment box for optional extra detail ────────────────────
   const bar = btn.closest('.feedback-bar');
   if (bar && !bar.querySelector('.feedback-comment-box')) {
     const box = document.createElement('div');
     box.className = 'feedback-comment-box';
     box.innerHTML = `
       <textarea class="feedback-textarea" maxlength="300"
-        placeholder="${rating === 'up' ? '💬 What did you like? (optional)' : '💬 What went wrong? (optional)'}"></textarea>
+        placeholder="${rating === 'up' ? '💬 Add a comment? (optional)' : '💬 What went wrong? (optional)'}"></textarea>
       <div class="feedback-comment-actions">
-        <span class="feedback-comment-hint">Press Submit or skip</span>
+        <button class="feedback-skip-btn" type="button">Skip</button>
         <button class="feedback-submit-btn" type="button">Submit</button>
       </div>`;
     bar.appendChild(box);
     box.querySelector('textarea').focus();
 
-    const submit = async (comment) => {
+    const submitComment = async (comment) => {
       box.innerHTML = `<span class="feedback-thanks">${rating === 'up' ? '👍 Thanks for the feedback!' : '👎 Thanks — we\'ll improve.'}</span>`;
-      const question     = card.dataset.question || '';
-      const answerPreview = card.querySelector('.answer-text')?.innerText?.slice(0, 300) || '';
-      const sessionId    = window._sessionId || 'anon';
+      if (!comment) return; // rating already saved, skip empty re-submit
+      // Save again with comment text (creates a second richer record)
       try {
         await fetch(`${getBase()}/feedback`, {
           method: 'POST',
@@ -233,10 +245,13 @@ async function handleFeedbackClick(btn, rating) {
     };
 
     box.querySelector('.feedback-submit-btn').addEventListener('click', () => {
-      submit(box.querySelector('textarea').value.trim());
+      submitComment(box.querySelector('textarea').value.trim());
+    });
+    box.querySelector('.feedback-skip-btn').addEventListener('click', () => {
+      submitComment('');
     });
     box.querySelector('textarea').addEventListener('keydown', e => {
-      if (e.key === 'Enter' && e.ctrlKey) submit(e.target.value.trim());
+      if (e.key === 'Enter' && e.ctrlKey) submitComment(e.target.value.trim());
     });
   }
 }

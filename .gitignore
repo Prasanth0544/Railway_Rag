@@ -53,6 +53,7 @@ chroma_db/.*checkpoint*.json
 # ─────────────────────────────────────────────
 query_log.jsonl
 tests/eval_results.json
+feedback.jsonl
 
 # ─────────────────────────────────────────────
 # Internal planning / scratch docs
