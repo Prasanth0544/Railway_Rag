@@ -1,0 +1,193 @@
+"""
+app/mongodb.py
+Centralised MongoDB Atlas connection + helpers.
+Both local and Render deployments write to the same Atlas cluster.
+
+Database : railway_rag
+Collections:
+  query_logs  - one doc per user query
+  feedback    - one doc per thumbs rating
+"""
+from __future__ import annotations
+import logging, os, threading
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
+from pymongo import MongoClient, ASCENDING, DESCENDING
+from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError, OperationFailure
+
+log = logging.getLogger("app.mongodb")
+
+DB_NAME      = "Railway_Rag"
+COL_QUERIES  = "query_logs"
+COL_FEEDBACK = "feedback"
+
+_client = None
+_db     = None
+_status = "not_configured"
+
+
+def _connect():
+    global _client, _db, _status
+    # Read fresh from env each time (must be inside function so dotenv is loaded first)
+    mongo_uri = os.getenv("MONGO_URI", "")
+    if not mongo_uri:
+        _status = "not_configured"
+        log.warning("[MongoDB] MONGO_URI not set - disabled.")
+        return
+    _status = "connecting"
+    log.info("[MongoDB] Connecting to Atlas...")
+    try:
+        _client = MongoClient(mongo_uri, serverSelectionTimeoutMS=8000)
+        _db = _client[DB_NAME]
+        _client.admin.command("ping")
+        _status = "online"
+        log.info("[MongoDB] Connected to Atlas, db=%s", DB_NAME)
+        _ensure_indexes()
+    except (ConnectionFailure, ServerSelectionTimeoutError, OperationFailure) as e:
+        _status = "error"
+        log.error("[MongoDB] Connection failed: %s", e)
+        _client = None
+        _db = None
+
+
+def _ensure_indexes():
+    try:
+        _db[COL_QUERIES].create_index([("ts", DESCENDING)])
+        _db[COL_QUERIES].create_index([("intent", ASCENDING)])
+        _db[COL_QUERIES].create_index([("question", ASCENDING)])
+        _db[COL_FEEDBACK].create_index([("ts", DESCENDING)])
+        _db[COL_FEEDBACK].create_index([("rating", ASCENDING)])
+        log.info("[MongoDB] Indexes verified.")
+    except Exception as e:
+        log.warning("[MongoDB] Index warning: %s", e)
+
+
+def init_async():
+    """Connect in a background thread - never blocks server startup."""
+    threading.Thread(target=_connect, name="mongo-init", daemon=True).start()
+
+
+def is_online():
+    return _status == "online" and _client is not None
+
+
+def get_status():
+    return _status
+
+
+def ping():
+    if _client is None:
+        return False
+    try:
+        _client.admin.command("ping")
+        return True
+    except Exception:
+        return False
+
+
+def insert_query_log(doc: Dict[str, Any]) -> bool:
+    if not is_online():
+        return False
+    try:
+        doc.setdefault("ts", datetime.now(timezone.utc))
+        _db[COL_QUERIES].insert_one(doc)
+        return True
+    except Exception as e:
+        log.error("[MongoDB] insert_query_log: %s", e)
+        return False
+
+
+def insert_feedback(doc: Dict[str, Any]) -> bool:
+    if not is_online():
+        return False
+    try:
+        doc.setdefault("ts", datetime.now(timezone.utc))
+        _db[COL_FEEDBACK].insert_one(doc)
+        return True
+    except Exception as e:
+        log.error("[MongoDB] insert_feedback: %s", e)
+        return False
+
+
+def get_feedback_summary() -> Optional[Dict[str, Any]]:
+    if not is_online():
+        return None
+    try:
+        col = _db[COL_FEEDBACK]
+        total = col.count_documents({})
+        if not total:
+            return {"total": 0, "thumbs_up": 0, "thumbs_down": 0,
+                    "positive_rate_pct": 0, "top_liked": [], "top_disliked": []}
+        up   = col.count_documents({"rating": "up"})
+        down = col.count_documents({"rating": "down"})
+        pct  = round(up / total * 100)
+        top_liked = [
+            {"question": d["question"], "count": 1}
+            for d in col.find(
+                {"rating": "up", "question": {"$exists": True, "$ne": ""}},
+                {"question": 1, "_id": 0}
+            ).sort("ts", DESCENDING).limit(3)
+        ]
+        top_disliked = [
+            {"question": d["question"], "count": 1}
+            for d in col.find(
+                {"rating": "down", "question": {"$exists": True, "$ne": ""}},
+                {"question": 1, "_id": 0}
+            ).sort("ts", DESCENDING).limit(3)
+        ]
+        return {
+            "total": total, "thumbs_up": up, "thumbs_down": down,
+            "positive_rate_pct": pct,
+            "top_liked": top_liked, "top_disliked": top_disliked,
+        }
+    except Exception as e:
+        log.error("[MongoDB] get_feedback_summary: %s", e)
+        return None
+
+
+def get_query_analytics() -> Optional[Dict[str, Any]]:
+    if not is_online():
+        return None
+    try:
+        col = _db[COL_QUERIES]
+        total = col.count_documents({})
+        if not total:
+            return None
+        intent_dist = {
+            (d["_id"] or "unknown"): d["count"]
+            for d in col.aggregate([
+                {"$group": {"_id": "$intent", "count": {"$sum": 1}}},
+                {"$sort": {"count": -1}},
+            ])
+        }
+        avg_docs = list(col.aggregate([
+            {"$match": {"response_time_ms": {"$exists": True, "$gt": 0}}},
+            {"$group": {"_id": None, "avg": {"$avg": "$response_time_ms"}}},
+        ]))
+        avg_ms = round(avg_docs[0]["avg"]) if avg_docs else 0
+        top_qs = [
+            {"question": d["_id"], "count": d["count"]}
+            for d in col.aggregate([
+                {"$match": {"question": {"$exists": True, "$ne": ""}}},
+                {"$group": {"_id": "$question", "count": {"$sum": 1}}},
+                {"$sort": {"count": -1}},
+                {"$limit": 8},
+            ])
+        ]
+        errors  = col.count_documents({"error": True})
+        live    = col.count_documents({"used_live_api": True})
+        live_ok = col.count_documents({"used_live_api": True, "error": {"$ne": True}})
+        return {
+            "total_queries": total,
+            "avg_response_time_ms": avg_ms,
+            "error_rate_pct": round(errors / total * 100, 1) if total else 0,
+            "intent_distribution": intent_dist,
+            "top_questions": top_qs,
+            "live_api_used": live,
+            "live_api_success_rate_pct": round(live_ok / live * 100) if live else 100,
+            "hallucination_flags": col.count_documents({"hallucination_flag": True}),
+            "source": "mongodb",
+        }
+    except Exception as e:
+        log.error("[MongoDB] get_query_analytics: %s", e)
+        return None

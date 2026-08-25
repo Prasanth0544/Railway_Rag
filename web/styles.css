@@ -580,7 +580,7 @@ input:focus {
   border: 1px solid var(--border);
   box-shadow: var(--shadow-sm);
   max-width: 100%;
-  overflow-x: hidden;
+  /* Note: no overflow:hidden here — would break position:sticky on .sources-panel */
 }
 
 /* Markdown-rendered answer text */
@@ -1416,8 +1416,126 @@ textarea::placeholder { color: var(--ink3); }
 .answer-card--grid .copy-btn {
   grid-column: 1 / -1;
 }
+.answer-card--grid .answer-actions {
+  grid-column: 1 / -1;
+}
 .answer-main {
   min-width: 0;
+}
+
+/* ── Answer action bar (copy + feedback) ────────────────── */
+.answer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.feedback-btns {
+  display: flex;
+  gap: 4px;
+}
+
+.feedback-btn {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 1rem;
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity 0.15s, background 0.15s, transform 0.1s;
+  line-height: 1;
+}
+.feedback-btn:hover:not(:disabled) {
+  opacity: 1;
+  transform: scale(1.15);
+}
+.feedback-btn:disabled {
+  cursor: default;
+}
+.feedback-up--active {
+  background: rgba(34,197,94,0.15);
+  border-color: rgba(34,197,94,0.4);
+  opacity: 1 !important;
+}
+.feedback-down--active {
+  background: rgba(239,68,68,0.12);
+  border-color: rgba(239,68,68,0.3);
+  opacity: 1 !important;
+}
+
+/* ── Feedback bar (below answer, inside answer-main) ─────── */
+.feedback-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 0 4px;
+  border-top: 1px solid var(--border);
+  margin-top: 12px;
+}
+.feedback-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.feedback-bar-label {
+  font-size: 0.78rem;
+  color: var(--ink2);
+  flex: 1;
+}
+
+/* ── Inline comment box ──────────────────────────────────── */
+.feedback-comment-box {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  animation: fadeSlideIn 0.18s ease;
+}
+@keyframes fadeSlideIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.feedback-textarea {
+  width: 100%;
+  min-height: 68px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border2);
+  background: var(--bg3);
+  color: var(--ink);
+  font-size: 0.83rem;
+  font-family: var(--font);
+  resize: vertical;
+  outline: none;
+  transition: border-color var(--t);
+}
+.feedback-textarea:focus { border-color: var(--blue); }
+.feedback-comment-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.feedback-comment-hint {
+  font-size: 0.72rem;
+  color: var(--ink3);
+}
+.feedback-submit-btn {
+  padding: 5px 14px;
+  border-radius: 7px;
+  border: 1px solid rgba(59,130,246,0.4);
+  background: rgba(59,130,246,0.12);
+  color: var(--blue);
+  font-size: 0.8rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background var(--t);
+}
+.feedback-submit-btn:hover { background: rgba(59,130,246,0.22); }
+.feedback-thanks {
+  font-size: 0.8rem;
+  color: var(--ink2);
+  padding: 4px 0;
 }
 
 /* ── Right-side sources panel ───────────────────────────── */
@@ -1431,6 +1549,11 @@ textarea::placeholder { color: var(--ink3); }
   border: 1px solid var(--border);
   align-self: start;
   min-width: 0;
+  /* Sticky: stays visible while scrolling long answers */
+  position: sticky;
+  top: 12px;
+  max-height: calc(100vh - 120px);
+  overflow-y: auto;
 }
 .sp-heading {
   font-size: 0.68rem;

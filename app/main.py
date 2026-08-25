@@ -193,10 +193,13 @@ _rag_loading = False
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Start a background thread to warm up RAG chain â€” port opens immediately."""
+    """Start a background thread to warm up RAG chain - port opens immediately."""
     logger.info("Railway RAG Assistant -- Starting up (lazy mode)...")
     logger.info("Port will open immediately. RAG chain warms up in background.")
     logger.info("API is live â€” Swagger UI at /docs")
+    # Connect MongoDB Atlas in background (non-blocking)
+    from app import mongodb as _mongo
+    _mongo.init_async()
     # Kick off background warm-up so first query isn't slow
     loop = asyncio.get_event_loop()
     loop.run_in_executor(None, _warmup_rag_chain)
@@ -457,10 +460,17 @@ async def api_health():
     _rapid_key = os.getenv("RAPIDAPI_KEY", "")
     services["rapidapi"] = "configured" if (_rapid_key and len(_rapid_key) > 5) else "not_configured"
 
-    # ── 5. RAG Chain ──────────────────────────────────────────────────────────
+    # -- 5. RAG Chain
     services["rag_chain"] = "ready" if rag_chain is not None else "warming_up"
 
-    # ── 6. Overall status ─────────────────────────────────────────────────────
+    # -- 6. MongoDB Atlas
+    try:
+        from app import mongodb as _mongo
+        services["mongodb"] = _mongo.get_status()
+    except Exception:
+        services["mongodb"] = "not_configured"
+
+    # -- 7. Overall status
     critical_ok = (
         services["chromadb"] == "online"
         and services["gemini_api"] == "connected"
@@ -878,6 +888,20 @@ async def ask_question_smart(request: QuestionRequest, raw_request: Request):
                 )
             except Exception:
                 pass  # analytics should never break the main flow
+            # Mirror to MongoDB Atlas
+            try:
+                from app import mongodb as _mongo
+                _mongo.insert_query_log({
+                    "question": question,
+                    "intent": intent,
+                    "train_no": train_no,
+                    "response_time_ms": elapsed_ms,
+                    "used_live_api": intent in ("LIVE", "HYBRID") and train_no is not None,
+                    "error": False,
+                    "hallucination_flag": bool(validation_warnings),
+                })
+            except Exception:
+                pass
 
             # Cache STATIC responses for future re-use (Phase 6B)
             if intent == "STATIC" and full_answer and not validation_warnings:
@@ -1183,13 +1207,83 @@ async def get_station(station_code: str):
 @app.get("/admin/stats", tags=["Admin"])
 async def get_admin_stats():
     """
-    Returns query analytics: total queries, avg response time,
-    intent distribution, top questions, live API success rate,
-    and hallucination flag count.
+    Returns query analytics from MongoDB Atlas:
+    total queries, avg response time, intent distribution,
+    top questions, live API success rate, hallucination flags.
     """
+    from app import mongodb as _mongo
+    if not _mongo.is_online():
+        return {"error": "MongoDB offline", "total_queries": 0}
     try:
-        from app.analytics import get_stats
-        return get_stats()
+        stats = _mongo.get_query_analytics()
+        return stats or {"total_queries": 0, "message": "No data yet"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ── Feedback endpoints ────────────────────────────────────────────────────────
+
+import threading as _threading
+_FEEDBACK_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "feedback.jsonl")
+_feedback_lock = _threading.Lock()
+
+class FeedbackRequest(BaseModel):
+    question: str = Field(..., max_length=500)
+    answer_preview: str = Field("", max_length=300)
+    rating: str = Field(...)                            # "up" or "down"
+    session_id: str = Field("anon")
+    comment: str = Field("", max_length=500)            # optional user comment
+
+@app.post("/feedback", tags=["Feedback"])
+async def submit_feedback(req: FeedbackRequest):
+    """
+    Store user thumbs-up / thumbs-down rating for an answer.
+    Appends to feedback.jsonl (one JSON object per line).
+    """
+    import time as _time
+    if req.rating not in ("up", "down"):
+        raise HTTPException(status_code=400, detail="rating must be 'up' or 'down'")
+
+    entry = {
+        "ts": _time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "question": req.question[:200],
+        "answer_preview": req.answer_preview[:300],
+        "rating": req.rating,
+        "comment": req.comment[:500] if req.comment else "",
+        "session_id": req.session_id,
+    }
+    try:
+        with _feedback_lock:
+            with open(_FEEDBACK_FILE, "a", encoding="utf-8") as f:
+                import json as _json
+                f.write(_json.dumps(entry) + "\n")
+    except Exception as e:
+        logger.warning(f"[FEEDBACK] Write failed: {e}")
+        raise HTTPException(status_code=500, detail="Could not save feedback")
+
+    # Mirror to MongoDB Atlas (non-blocking, best-effort)
+    try:
+        from app import mongodb as _mongo
+        _mongo.insert_feedback(dict(entry))
+    except Exception:
+        pass
+
+    from app import mongodb as _mongo
+    return {"status": "ok", "rating": req.rating, "stored_in_mongo": _mongo.is_online()}
+
+
+@app.get("/feedback/summary", tags=["Feedback"])
+async def feedback_summary():
+    """
+    Returns aggregate feedback stats from MongoDB Atlas:
+    total ratings, thumbs-up rate, top liked/disliked questions.
+    """
+    from app import mongodb as _mongo
+    if not _mongo.is_online():
+        return {"total": 0, "message": "MongoDB offline"}
+    try:
+        summary = _mongo.get_feedback_summary()
+        return summary or {"total": 0, "message": "No feedback yet"}
     except Exception as e:
         return {"error": str(e)}
 
