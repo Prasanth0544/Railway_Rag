@@ -19,6 +19,8 @@ chromadb
 # ── Data Processing ───────────────────────────────────
 pandas
 python-dotenv
+pymongo[srv]                    # MongoDB Atlas client (query_logs + feedback collections)
+
 python-multipart                # For FastAPI file uploads (image/PDF)
 pydantic-settings               # Config validation (app/config.py)
 beautifulsoup4                  # HTML scraper for PNR fallback (pnr_client.py)
