@@ -134,13 +134,42 @@
         </div>
       </div>
 
-      <!-- API status -->
+      <!-- API Services Health Panel -->
       <div class="status-card" aria-live="polite">
         <div class="status-header">
           <span class="status-dot" id="statusDot"></span>
           <span class="status-label" id="statusLabel">Connecting…</span>
         </div>
         <p class="status-msg" id="statusMessage">Checking API health</p>
+
+        <!-- Per-service rows -->
+        <div class="services-grid" id="servicesGrid">
+          <div class="svc-row">
+            <span class="svc-dot" id="svcDotChroma"></span>
+            <span class="svc-name">ChromaDB</span>
+            <span class="svc-badge" id="svcBadgeChroma">—</span>
+          </div>
+          <div class="svc-row">
+            <span class="svc-dot" id="svcDotGemini"></span>
+            <span class="svc-name">Gemini API</span>
+            <span class="svc-badge" id="svcBadgeGemini">—</span>
+          </div>
+          <div class="svc-row">
+            <span class="svc-dot" id="svcDotOR"></span>
+            <span class="svc-name">OpenRouter</span>
+            <span class="svc-badge" id="svcBadgeOR">—</span>
+          </div>
+          <div class="svc-row">
+            <span class="svc-dot" id="svcDotRapid"></span>
+            <span class="svc-name">RapidAPI</span>
+            <span class="svc-badge" id="svcBadgeRapid">—</span>
+          </div>
+          <div class="svc-row">
+            <span class="svc-dot" id="svcDotRAG"></span>
+            <span class="svc-name">RAG Chain</span>
+            <span class="svc-badge" id="svcBadgeRAG">—</span>
+          </div>
+        </div>
       </div>
 
       <!-- API URL -->

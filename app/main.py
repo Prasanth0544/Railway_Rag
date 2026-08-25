@@ -404,6 +404,80 @@ async def health():
     }
 
 
+@app.get("/api/health", tags=["Health"])
+async def api_health():
+    """
+    Detailed system health check — probes each service individually.
+
+    Returns per-service status:
+      - chromadb    : online | offline
+      - gemini_api  : connected | missing_key
+      - openrouter  : connected | missing_key | not_configured
+      - rapidapi    : configured | not_configured
+      - rag_chain   : ready | warming_up
+      - overall     : healthy | degraded | offline
+    """
+    services: dict = {}
+
+    # ── 1. ChromaDB ──────────────────────────────────────────────────────────
+    try:
+        import chromadb as _chromadb
+        _chroma_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "chroma_db")
+        if rag_chain is not None:
+            _c = rag_chain.retriever.client
+            _c.list_collections()           # lightweight ping
+            services["chromadb"] = "online"
+        elif os.path.exists(_chroma_dir):
+            _c = _chromadb.PersistentClient(path=_chroma_dir)
+            _c.list_collections()
+            services["chromadb"] = "online"
+        else:
+            services["chromadb"] = "offline"
+    except Exception:
+        services["chromadb"] = "offline"
+
+    # ── 2. Gemini API key ─────────────────────────────────────────────────────
+    _google_key = os.getenv("GOOGLE_API_KEY", "")
+    if _google_key and len(_google_key) > 10:
+        services["gemini_api"] = "connected"
+    else:
+        services["gemini_api"] = "missing_key"
+
+    # ── 3. OpenRouter ─────────────────────────────────────────────────────────
+    _provider = os.getenv("LLM_PROVIDER", "gemini").lower()
+    _or_key   = os.getenv("OPENROUTER_API_KEY", "")
+    if _provider == "openrouter":
+        services["openrouter"] = "connected" if (_or_key and len(_or_key) > 10) else "missing_key"
+    elif _or_key and len(_or_key) > 10:
+        services["openrouter"] = "configured"       # key present but not active provider
+    else:
+        services["openrouter"] = "not_configured"
+
+    # ── 4. RapidAPI (live train data on cloud) ────────────────────────────────
+    _rapid_key = os.getenv("RAPIDAPI_KEY", "")
+    services["rapidapi"] = "configured" if (_rapid_key and len(_rapid_key) > 5) else "not_configured"
+
+    # ── 5. RAG Chain ──────────────────────────────────────────────────────────
+    services["rag_chain"] = "ready" if rag_chain is not None else "warming_up"
+
+    # ── 6. Overall status ─────────────────────────────────────────────────────
+    critical_ok = (
+        services["chromadb"] == "online"
+        and services["gemini_api"] == "connected"
+        and services["rag_chain"] == "ready"
+    )
+    overall = "healthy" if critical_ok else (
+        "degraded" if services["chromadb"] == "online" else "offline"
+    )
+
+    return {
+        "status": overall,
+        "services": services,
+        "active_llm": _provider.upper(),
+        "message": "System Operational" if overall == "healthy" else "Some services degraded",
+    }
+
+
 @app.post("/ask", response_model=AnswerResponse, tags=["RAG"])
 async def ask_question(request: QuestionRequest):
     """
