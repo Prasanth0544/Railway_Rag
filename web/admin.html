@@ -241,10 +241,20 @@
 
   <!-- Stat cards -->
   <div class="stat-row">
-    <div class="stat-card card-blue">
+    <div class="stat-card card-blue" style="grid-column: span 2">
       <div class="stat-label">Total Queries</div>
-      <div class="stat-value val-blue" id="statTotal">—</div>
-      <div class="stat-sub" id="statErrRate">Error rate: —</div>
+      <div style="display:flex;align-items:baseline;gap:18px;flex-wrap:wrap">
+        <div class="stat-value val-blue" id="statTotal" style="font-size:2.8rem">—</div>
+        <div style="display:flex;gap:12px;align-items:center;padding-bottom:2px">
+          <span style="font-size:0.82rem;background:rgba(34,197,94,0.13);color:var(--signal);border:1px solid rgba(34,197,94,0.25);border-radius:20px;padding:3px 10px">
+            ✅ <span id="statSuccess">—</span> successful
+          </span>
+          <span style="font-size:0.82rem;background:rgba(232,64,42,0.13);color:var(--rail);border:1px solid rgba(232,64,42,0.25);border-radius:20px;padding:3px 10px">
+            ❌ <span id="statFailed">—</span> failed
+          </span>
+        </div>
+      </div>
+      <div class="stat-sub" id="statErrRate" style="margin-top:6px">Error rate: —</div>
     </div>
     <div class="stat-card card-amber">
       <div class="stat-label">Avg Response</div>
@@ -292,6 +302,12 @@
     </div>
   </div>
 
+  <!-- Row 4: Combined Failures Panel -->
+  <div class="panel" style="margin-bottom:20px">
+    <div class="panel-title">❌ Query Failures</div>
+    <div id="failuresPanel"><div class="shimmer"></div><div class="shimmer" style="width:70%"></div></div>
+  </div>
+
 </main>
 
 <script>
@@ -327,12 +343,17 @@
 
   // ── Render stat cards ────────────────────────────────────
   function renderStats(data) {
-    document.getElementById('statTotal').textContent   = data.total_queries?.toLocaleString() ?? '—';
-    document.getElementById('statErrRate').textContent = `Error rate: ${data.error_rate_pct ?? 0}%`;
-    document.getElementById('statAvgMs').textContent   = data.avg_response_time_ms ? Math.round(data.avg_response_time_ms) : '—';
-    document.getElementById('statLive').textContent    = data.live_api_used?.toLocaleString() ?? '0';
-    document.getElementById('statLiveSub').textContent = `${data.live_api_success_rate_pct ?? 0}% success`;
-    document.getElementById('statHalluc').textContent  = data.hallucination_flags ?? '0';
+    const total   = data.total_queries   ?? 0;
+    const failed  = data.failed_queries  ?? 0;
+    const success = data.success_queries ?? (total - failed);
+    document.getElementById('statTotal').textContent    = total.toLocaleString();
+    document.getElementById('statSuccess').textContent  = success.toLocaleString();
+    document.getElementById('statFailed').textContent   = failed.toLocaleString();
+    document.getElementById('statErrRate').textContent  = `Error rate: ${data.error_rate_pct ?? 0}%`;
+    document.getElementById('statAvgMs').textContent    = data.avg_response_time_ms ? Math.round(data.avg_response_time_ms) : '—';
+    document.getElementById('statLive').textContent     = data.live_api_used?.toLocaleString() ?? '0';
+    document.getElementById('statLiveSub').textContent  = `${data.live_api_success_rate_pct ?? 0}% success`;
+    document.getElementById('statHalluc').textContent   = data.hallucination_flags ?? '0';
   }
 
   // ── Render intent chart ───────────────────────────────────
@@ -413,6 +434,119 @@
         ${topDisliked.map(q=>`<div class="q-row"><div class="q-text" style="color:var(--rail)">👎 ${escHtml(q.question)}</div><div class="q-count">×${q.count}</div></div>`).join('')}` : ''}`;
   }
 
+  // ── Combined Failures Panel (breakdown + list, horizontal) ──────
+  const ERROR_TYPE_LABELS = {
+    api_quota_exhausted: { label: 'API Quota / Rate Limit', icon: '🔴', color: 'var(--rail)' },
+    timeout:             { label: 'Timeout',                icon: '⏱️', color: 'var(--amber)' },
+    network_error:       { label: 'Network / SSL Error',    icon: '🌐', color: 'var(--amber)' },
+    auth_error:          { label: 'Auth / Key Error',       icon: '🔑', color: 'var(--rail)' },
+    rag_error:           { label: 'RAG / Retrieval Error',  icon: '📚', color: 'var(--purple)' },
+    server_error:        { label: 'Server Error',           icon: '💥', color: 'var(--rail)' },
+  };
+
+  // Full failure list stored here for "show all" toggle
+  let _allFailures = [];
+
+  function renderFailures(data) {
+    const el = document.getElementById('failuresPanel');
+    const breakdown = data.error_type_breakdown || {};
+    const total     = data.failed_queries || 0;
+    _allFailures    = data.recent_failures || [];
+
+    if (!total && !_allFailures.length) {
+      el.innerHTML = '<p class="placeholder">✅ No failures recorded — everything is working perfectly!</p>';
+      return;
+    }
+
+    // ─ LEFT: breakdown bars ───────────────────────────────────────
+    const entries = Object.entries(breakdown).sort((a,b) => b[1]-a[1]);
+    const max = entries[0]?.[1] || 1;
+    const breakdownHtml = entries.length
+      ? `<div style="font-size:0.74rem;color:var(--ink3);margin-bottom:10px">${total} failure${total !== 1 ? 's' : ''} total</div>
+         ${entries.map(([type, count]) => {
+           const meta  = ERROR_TYPE_LABELS[type] || { label: type, icon: '❓', color: 'var(--ink2)' };
+           const pct   = Math.round(count / max * 100);
+           const ofAll = total ? Math.round(count / total * 100) : 0;
+           return `<div class="intent-row" style="margin-bottom:10px">
+             <div class="intent-label" title="${type}" style="width:140px">${meta.icon} ${meta.label}</div>
+             <div class="intent-bar-wrap"><div class="intent-bar" style="width:${pct}%;background:${meta.color}"></div></div>
+             <div class="intent-count" style="width:50px;text-align:right">${count}&nbsp;<span style="color:var(--ink3)">·</span>&nbsp;${ofAll}%</div>
+           </div>`;
+         }).join('')}`
+      : '<p class="placeholder" style="padding:0">— no type data yet</p>';
+
+    // ─ RIGHT: failure list ───────────────────────────────────────
+    const visibleCount = 5;
+    const failureItemsHtml = (list) => list.map(f => {
+      const meta   = ERROR_TYPE_LABELS[f.error_type] || { label: f.error_type || 'unknown', icon: '❓', color: 'var(--ink2)' };
+      const t      = f.ts ? new Date(f.ts).toLocaleTimeString() : '';
+      const reason = f.error_reason
+        ? `<div style="font-size:0.71rem;color:var(--ink3);margin-top:2px;word-break:break-word">${escHtml(f.error_reason)}</div>`
+        : '';
+      return `<div class="q-row" style="flex-direction:column;align-items:flex-start;gap:3px;padding:8px 0">
+        <div style="display:flex;align-items:center;gap:8px;width:100%">
+          <span style="font-size:0.78rem;color:${meta.color};flex-shrink:0;white-space:nowrap">${meta.icon} ${meta.label}</span>
+          <span style="font-size:0.69rem;color:var(--ink3);margin-left:auto;white-space:nowrap">${t}</span>
+        </div>
+        <div style="font-size:0.8rem;color:var(--ink);line-height:1.4">${escHtml(f.question || '(no question recorded)')}</div>
+        ${reason}
+      </div>`;
+    }).join('');
+
+    const initial = _allFailures.slice(0, visibleCount);
+    const hasMore = _allFailures.length > visibleCount;
+
+    el.innerHTML = `
+      <div style="display:flex;gap:0;align-items:stretch">
+
+        <!-- LEFT: breakdown -->
+        <div style="flex:0 0 340px;min-width:0;padding-right:18px">
+          <div style="font-size:0.69rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--ink2);margin-bottom:10px">By Type</div>
+          ${breakdownHtml}
+        </div>
+
+        <!-- Arrow connector -->
+        <div style="flex:0 0 36px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;color:var(--ink3)">
+          <div style="flex:1;width:1px;background:var(--border)"></div>
+          <div style="font-size:1.1rem">&#8594;</div>
+          <div style="flex:1;width:1px;background:var(--border)"></div>
+        </div>
+
+        <!-- RIGHT: failure list -->
+        <div style="flex:1;min-width:0;padding-left:18px">
+          <div style="font-size:0.69rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--ink2);margin-bottom:10px">Recent Failures</div>
+          <div id="failureList">${_allFailures.length ? failureItemsHtml(initial) : '<p class="placeholder" style="padding:0">✅ No recent failures</p>'}</div>
+          ${hasMore ? `<button onclick="expandFailures()" id="showAllBtn"
+            style="margin-top:10px;font-size:0.75rem;color:var(--blue);background:none;border:1px solid var(--border2);border-radius:8px;padding:4px 12px;cursor:pointer;font-family:inherit">
+            Show all ${_allFailures.length} failures ▼
+          </button>` : ''}
+        </div>
+      </div>`;
+  }
+
+  function expandFailures() {
+    document.getElementById('failureList').innerHTML = (function() {
+      const meta_fn = f => ERROR_TYPE_LABELS[f.error_type] || { label: f.error_type || 'unknown', icon: '❓', color: 'var(--ink2)' };
+      return _allFailures.map(f => {
+        const meta   = meta_fn(f);
+        const t      = f.ts ? new Date(f.ts).toLocaleTimeString() : '';
+        const reason = f.error_reason
+          ? `<div style="font-size:0.71rem;color:var(--ink3);margin-top:2px;word-break:break-word">${escHtml(f.error_reason)}</div>`
+          : '';
+        return `<div class="q-row" style="flex-direction:column;align-items:flex-start;gap:3px;padding:8px 0">
+          <div style="display:flex;align-items:center;gap:8px;width:100%">
+            <span style="font-size:0.78rem;color:${meta.color};flex-shrink:0;white-space:nowrap">${meta.icon} ${meta.label}</span>
+            <span style="font-size:0.69rem;color:var(--ink3);margin-left:auto;white-space:nowrap">${t}</span>
+          </div>
+          <div style="font-size:0.8rem;color:var(--ink);line-height:1.4">${escHtml(f.question || '(no question recorded)')}</div>
+          ${reason}
+        </div>`;
+      }).join('');
+    })();
+    const btn = document.getElementById('showAllBtn');
+    if (btn) btn.remove();
+  }
+
   // ── Render system health ──────────────────────────────────
   function renderHealth(h) {
     const el   = document.getElementById('healthPanel');
@@ -465,6 +599,7 @@
       renderTopQuestions(stats);
       renderFeedback(fb);
       renderHealth(health);
+      renderFailures(stats);
       document.getElementById('lastUpdated').textContent = `Updated ${new Date().toLocaleTimeString()}`;
     } catch (e) {
       document.getElementById('lastUpdated').textContent = `Error: ${e.message}`;

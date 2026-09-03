@@ -390,6 +390,46 @@ def classify_intent(query: str) -> dict:
     query_lower = query.lower().strip()
     reasons: list[str] = []
 
+    # ── Step 0: Fast OUT_OF_DOMAIN blocklist ──────────────────────────
+    # Reject clearly non-railway topics BEFORE any LLM or heavy processing.
+    # These topics can never be railway queries — return instantly (0ms).
+    _OOD_PHRASES = (
+        # Hate / social conflict
+        r"\bhate\b.{0,25}\b(indian|american|muslim|hindu|sikh|christian|jewish|white|black|asian)s?\b",
+        r"\b(american|british|chinese|pakistani|russian)s?\b.{0,25}\bhate\b",
+        r"\b(racism|racist|sexism|sexist|casteism|discrimination|prejudice)\b",
+        # Politics / government (unrelated to railway ministry)
+        r"\b(modi|gandhi|bjp|congress|aap|election|vote|parliament|senate|president|prime minister)\b.{0,30}\b(why|what|who|how|opinion|better|worse|good|bad)\b",
+        r"\b(why|what).{0,20}\b(politicians|government|democracy|dictatorship|communism|capitalism)\b",
+        # Religion
+        r"\b(why|do|does|is).{0,25}\b(hindu|muslim|christian|sikh|buddhist|jew|jewish|islam|allah|god|bible|quran)s?\b.{0,25}\b(hate|love|believe|worship|pray|fight|better|worse)\b",
+        # Food (not train catering)
+        r"\b(recipe|how to (cook|make|bake|fry)|ingredients? for|best (pizza|burger|curry|biryani|pasta|sushi))\b",
+        # Sports (not railway sports quota)
+        r"\b(cricket|football|soccer|tennis|basketball|ipl|nfl|fifa|world cup)\b.{0,25}\b(score|match|team|player|win|lost|result)\b",
+        # Tech / coding
+        r"\b(python|javascript|java|c\+\+|sql|html|css|react|angular|django|flask)\b.{0,20}\b(code|syntax|function|error|tutorial|how to|example)\b",
+        # Health / medicine
+        r"\b(symptoms? of|treatment for|cure for|medicine for|dosage of)\b.{0,30}\b(cancer|diabetes|fever|cold|covid|flu|disease|infection)\b",
+        # Geography / history (not Indian Railways)
+        r"\b(capital of|population of|why is|history of|war of)\b.{0,30}\b(america|china|pakistan|russia|germany|france|japan|england|britain|uk|usa)\b",
+        # Social opinions
+        r"\bwhy do\b.{0,30}\b(hate|love|dislike|prefer|avoid|fear)\b.{0,30}\b(indian|american|asian|white|black|muslim|hindu)s?\b",
+        r"\b(is|are).{0,15}\b(indian|american|asian|white|black|muslim|hindu)s?\b.{0,20}\b(smart|stupid|lazy|hard.?working|racist|rude|friendly)\b",
+    )
+    for ood_pat in _OOD_PHRASES:
+        if re.search(ood_pat, query, re.IGNORECASE):
+            return {
+                "intent":          "OUT_OF_DOMAIN",
+                "intent_category": INTENT_OUT_OF_DOMAIN,
+                "confidence":      1.0,
+                "train_no":        None,
+                "station_code":    None,
+                "pnr":             None,
+                "is_pnr":          False,
+                "reasons":         [f"Fast OOD blocklist match: {ood_pat[:60]}"],
+            }
+
     # ── Step 1: Extract entities ──────────────────────────────────
     pnr       = _extract_pnr_number(query)
     train_no  = _extract_train_number(query)
@@ -420,11 +460,25 @@ def classify_intent(query: str) -> dict:
     routing_matches  = _word_match(_ROUTING_KEYWORDS_FALLBACK, query_lower)
     general_railway  = any(re.search(rf'\b{re.escape(kw)}\b', query_lower) for kw in _GENERAL_RAILWAY_KEYWORDS)
 
-    # ── Step 4: OUT_OF_DOMAIN guard ───────────────────────────────
-    if (not train_no and not pnr and not station_detected
-            and not live_matches and not static_matches
-            and not schedule_matches and not routing_matches
-            and not general_railway):
+    # ── Step 4: OUT_OF_DOMAIN guard ──────────────────────────────
+    # Require real railway signals. A single generic-word match (e.g. "general",
+    # "run", "from") is NOT enough — need at least one concrete signal.
+    concrete_signals = bool(
+        train_no or pnr
+        or live_matches or static_matches
+        or schedule_matches
+    )
+    # station_detected alone is weak (e.g. "indians" matches station tokens)
+    # routing_matches alone is weak ("from", "to", "via" appear in any sentence)
+    # general_railway alone is weak — require at least one more signal too
+    weak_only = (
+        not concrete_signals
+        and (station_detected or routing_matches or general_railway)
+        and not (station_detected and (routing_matches or general_railway))
+        and not (general_railway and (len(_word_match(_GENERAL_RAILWAY_KEYWORDS, query_lower)) >= 2))
+    )
+
+    if not concrete_signals and not station_detected and not routing_matches and not general_railway:
         return {
             "intent":          "OUT_OF_DOMAIN",
             "intent_category": INTENT_OUT_OF_DOMAIN,
@@ -434,6 +488,18 @@ def classify_intent(query: str) -> dict:
             "pnr":             None,
             "is_pnr":          False,
             "reasons":         ["No railway signals found in query"],
+        }
+
+    if weak_only:
+        return {
+            "intent":          "OUT_OF_DOMAIN",
+            "intent_category": INTENT_OUT_OF_DOMAIN,
+            "confidence":      0.90,
+            "train_no":        None,
+            "station_code":    None,
+            "pnr":             None,
+            "is_pnr":          False,
+            "reasons":         ["Only weak/generic railway signals — likely out of domain"],
         }
 
     # ── Step 5: Score-based routing ───────────────────────────────

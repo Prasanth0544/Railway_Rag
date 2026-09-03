@@ -193,32 +193,62 @@ function handleCopyClick(btn) {
   });
 }
 
-/** Feedback thumbs-up / thumbs-down handler */
+/** Feedback thumbs-up / thumbs-down handler — YouTube-style */
 async function handleFeedbackClick(btn, rating) {
   const card = btn.closest('.answer-card');
-  if (!card || card.dataset.rated) return;
-  card.dataset.rated = rating;
-
-  // Lock both buttons visually
-  card.querySelectorAll('.feedback-btn').forEach(b => b.disabled = true);
-  btn.classList.add(rating === 'up' ? 'feedback-up--active' : 'feedback-down--active');
+  if (!card) return;
 
   const question      = card.dataset.question || '';
   const answerPreview = card.querySelector('.answer-text')?.innerText?.slice(0, 300) || '';
   const sessionId     = window._sessionId || 'anon';
+  const upBtn         = card.querySelector('.feedback-up');
+  const downBtn       = card.querySelector('.feedback-down');
 
-  // ── Step 1: Save rating IMMEDIATELY so "just leaving" always counts ──────
+  // ── Toggle: clicking the active button again resets it ───────────────────
+  if (card.dataset.rated === rating) {
+    // Undo — clear state, re-enable both buttons
+    card.dataset.rated = '';
+    upBtn?.classList.remove('feedback-up--active');
+    downBtn?.classList.remove('feedback-down--active');
+    upBtn && (upBtn.disabled = false);
+    downBtn && (downBtn.disabled = false);
+    // Remove comment box if open
+    card.querySelector('.feedback-comment-box')?.remove();
+    return; // No API call for undo (keeps things simple)
+  }
+
+  // ── Switch: if already rated opposite, swap without re-locking ───────────
+  const switching = !!card.dataset.rated;
+  card.dataset.rated = rating;
+
+  // Visual state: activate clicked, deactivate other
+  upBtn?.classList.toggle('feedback-up--active',   rating === 'up');
+  downBtn?.classList.toggle('feedback-down--active', rating === 'down');
+  // Keep both clickable for toggling, just swap active class
+  upBtn   && (upBtn.disabled   = false);
+  downBtn && (downBtn.disabled = false);
+
+  // ── STEP 1: Count the rating immediately (YouTube-style) ─────────────────
   try {
     await fetch(`${getBase()}/feedback`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question, answer_preview: answerPreview, rating, comment: '', session_id: sessionId }),
+      body: JSON.stringify({
+        question, answer_preview: answerPreview,
+        rating, comment: '', session_id: sessionId,
+        comment_only: false,
+      }),
     });
   } catch (_) { /* silent fail */ }
 
-  // ── Step 2: Show comment box for optional extra detail ────────────────────
+  // ── STEP 2: Show optional comment box (if not already open) ──────────────
   const bar = btn.closest('.feedback-bar');
-  if (bar && !bar.querySelector('.feedback-comment-box')) {
+  if (!bar) return;
+
+  // Remove old comment box if switching ratings
+  if (switching) card.querySelector('.feedback-comment-box')?.remove();
+
+  if (!bar.querySelector('.feedback-comment-box')) {
     const box = document.createElement('div');
     box.className = 'feedback-comment-box';
     box.innerHTML = `
@@ -231,27 +261,32 @@ async function handleFeedbackClick(btn, rating) {
     bar.appendChild(box);
     box.querySelector('textarea').focus();
 
-    const submitComment = async (comment) => {
+    // Skip — just close silently, rating already counted
+    box.querySelector('.feedback-skip-btn').addEventListener('click', () => {
+      box.innerHTML = `<span class="feedback-thanks">${rating === 'up' ? '👍 Thanks!' : '👎 Noted!'}</span>`;
+    });
+
+    // Submit — update comment on existing record (comment_only=true, no new count)
+    const submitComment = async () => {
+      const comment = box.querySelector('textarea').value.trim();
+      if (!comment) { box.querySelector('.feedback-skip-btn').click(); return; }
       box.innerHTML = `<span class="feedback-thanks">${rating === 'up' ? '👍 Thanks for the feedback!' : '👎 Thanks — we\'ll improve.'}</span>`;
-      if (!comment) return; // rating already saved, skip empty re-submit
-      // Save again with comment text (creates a second richer record)
       try {
         await fetch(`${getBase()}/feedback`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ question, answer_preview: answerPreview, rating, comment, session_id: sessionId }),
+          body: JSON.stringify({
+            question, answer_preview: answerPreview,
+            rating, comment, session_id: sessionId,
+            comment_only: true,
+          }),
         });
       } catch (_) { /* silent fail */ }
     };
 
-    box.querySelector('.feedback-submit-btn').addEventListener('click', () => {
-      submitComment(box.querySelector('textarea').value.trim());
-    });
-    box.querySelector('.feedback-skip-btn').addEventListener('click', () => {
-      submitComment('');
-    });
+    box.querySelector('.feedback-submit-btn').addEventListener('click', submitComment);
     box.querySelector('textarea').addEventListener('keydown', e => {
-      if (e.key === 'Enter' && e.ctrlKey) submitComment(e.target.value.trim());
+      if (e.key === 'Enter' && e.ctrlKey) submitComment();
     });
   }
 }

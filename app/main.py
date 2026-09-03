@@ -139,20 +139,20 @@ def _validate_answer(answer: str, context: str, train_no: str | None) -> list[st
         context_trains.add(str(int(train_no)) if train_no.isdigit() else train_no)
     for t in answer_trains:
         if t not in context_trains:
-            warnings.append(f"âš ï¸ Answer mentions train {t} which was not found in retrieved context â€” possible hallucination.")
+            warnings.append(f"[!] Answer mentions train {t} which was not found in retrieved context - possible hallucination.")
     return warnings
 
 
-# â”€â”€ Friendly Error Messages (Phase 3C) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# - Friendly Error Messages (Phase 3C) --------------------------------
 ERROR_MESSAGES = {
-    "rate_limit":  "â³ You're sending queries too fast. Please wait a moment and try again.",
-    "api_timeout": "âš ï¸ The live data service is temporarily slow. Showing schedule data instead.",
-    "no_results":  "ðŸ” I couldn't find specific information for that query. Try rephrasing or adding a train number.",
-    "server_error": "âŒ Something went wrong on our end. Please try again in a few seconds.",
+    "rate_limit":  "[!] You're sending queries too fast. Please wait a moment and try again.",
+    "api_timeout": "[!] The live data service is temporarily slow. Showing schedule data instead.",
+    "no_results":  "[!] I couldn't find specific information for that query. Try rephrasing or adding a train number.",
+    "server_error": "[!] Something went wrong on our end. Please try again in a few seconds.",
 }
 
 
-# â”€â”€ Response Cache (Phase 6B) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# - Response Cache (Phase 6B) ------------------------------------------
 import hashlib
 
 _response_cache: dict[str, dict] = {}
@@ -196,7 +196,7 @@ async def lifespan(app: FastAPI):
     """Start a background thread to warm up RAG chain - port opens immediately."""
     logger.info("Railway RAG Assistant -- Starting up (lazy mode)...")
     logger.info("Port will open immediately. RAG chain warms up in background.")
-    logger.info("API is live â€” Swagger UI at /docs")
+    logger.info("API is live - Swagger UI at /docs")
     # Connect MongoDB Atlas in background (non-blocking)
     from app import mongodb as _mongo
     _mongo.init_async()
@@ -221,7 +221,7 @@ def _warmup_rag_chain():
         provider = os.getenv("LLM_PROVIDER", "gemini").lower()
         api_key = os.getenv("GOOGLE_API_KEY", "")
         if provider == "gemini" and (not api_key or api_key == "your-gemini-api-key-here"):
-            logger.error("[warmup] GOOGLE_API_KEY not set â€” RAG chain not loaded.")
+            logger.error("[warmup] GOOGLE_API_KEY not set - RAG chain not loaded.")
             return
         from app.rag import get_rag_chain
         with _rag_lock:
@@ -234,7 +234,7 @@ def _warmup_rag_chain():
 
 
 def _ensure_rag_chain():
-    """Ensure RAG chain is loaded â€” waits if background warmup is still running."""
+    """Ensure RAG chain is loaded - waits if background warmup is still running."""
     if rag_chain is not None:
         return
     # If warmup is still in progress, wait for it (up to 120s)
@@ -290,7 +290,7 @@ DATA_COLLECTIONS_DIR = os.getenv(
 
 def load_csv(filename: str, directory: str = None) -> list[dict]:
     """Load a CSV file and return as list of dicts."""
-    import pandas as pd  # lazy import â€” keeps startup RAM low
+    import pandas as pd  # lazy import - keeps startup RAM low
     base_dir = directory or DATA_DIR
     filepath = os.path.join(base_dir, filename)
     if not os.path.exists(filepath):
@@ -324,14 +324,10 @@ def extract_token_text(chunk) -> str:
 
 # --- Endpoints ---
 
-@app.get("/", response_model=HealthResponse, tags=["Health"])
+@app.get("/", tags=["Health"])
 async def root():
-    """Health check and welcome endpoint."""
-    return HealthResponse(
-        status="ok",
-        message="Railway RAG Assistant is running! Use POST /ask to query.",
-        version="1.0.0",
-    )
+    """Welcome + live health check. Returns identical data to /health."""
+    return await health()
 
 
 @app.post("/clear-cache", tags=["Admin"])
@@ -341,7 +337,7 @@ async def clear_cache(raw_request: Request):
     session_id = raw_request.headers.get("X-Session-Id", client_ip)
     session_key = session_id or client_ip
 
-    # Clear response cache (all users â€” it's a shared static answer cache)
+    # Clear response cache (all users - it's a shared static answer cache)
     cache_count = len(_response_cache)
     _response_cache.clear()
 
@@ -361,7 +357,7 @@ async def clear_cache(raw_request: Request):
 
 @app.get("/health", tags=["Health"])
 async def health():
-    """Health check endpoint â€” called by the web UI on load."""
+    """Health check endpoint - called by the web UI on load."""
     import chromadb as _chromadb
     _chroma_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "chroma_db")
     _cols: dict = {}
@@ -410,7 +406,7 @@ async def health():
 @app.get("/api/health", tags=["Health"])
 async def api_health():
     """
-    Detailed system health check — probes each service individually.
+    Detailed system health check - probes each service individually.
 
     Returns per-service status:
       - chromadb    : online | offline
@@ -422,7 +418,7 @@ async def api_health():
     """
     services: dict = {}
 
-    # ── 1. ChromaDB ──────────────────────────────────────────────────────────
+    # -- 1. ChromaDB ----------------------------------------------------------
     try:
         import chromadb as _chromadb
         _chroma_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "chroma_db")
@@ -439,14 +435,14 @@ async def api_health():
     except Exception:
         services["chromadb"] = "offline"
 
-    # ── 2. Gemini API key ─────────────────────────────────────────────────────
+    # -- 2. Gemini API key ----------------------------------------------------─
     _google_key = os.getenv("GOOGLE_API_KEY", "")
     if _google_key and len(_google_key) > 10:
         services["gemini_api"] = "connected"
     else:
         services["gemini_api"] = "missing_key"
 
-    # ── 3. OpenRouter ─────────────────────────────────────────────────────────
+    # -- 3. OpenRouter --------------------------------------------------------─
     _provider = os.getenv("LLM_PROVIDER", "gemini").lower()
     _or_key   = os.getenv("OPENROUTER_API_KEY", "")
     if _provider == "openrouter":
@@ -456,7 +452,7 @@ async def api_health():
     else:
         services["openrouter"] = "not_configured"
 
-    # ── 4. RapidAPI (live train data on cloud) ────────────────────────────────
+    # -- 4. RapidAPI (live train data on cloud) --------------------------------
     _rapid_key = os.getenv("RAPIDAPI_KEY", "")
     services["rapidapi"] = "configured" if (_rapid_key and len(_rapid_key) > 5) else "not_configured"
 
@@ -537,7 +533,7 @@ async def ask_question(request: QuestionRequest):
 @app.post("/ask/stream", tags=["RAG"])
 async def ask_question_stream(request: QuestionRequest):
     """
-    Streaming RAG endpoint â€” returns answer token-by-token via Server-Sent Events.
+    Streaming RAG endpoint - returns answer token-by-token via Server-Sent Events.
     Connect with EventSource in the browser for real-time word-by-word output.
     """
     from fastapi.responses import StreamingResponse
@@ -617,6 +613,7 @@ async def ask_question_smart(request: QuestionRequest, raw_request: Request):
     """
     from fastapi.responses import StreamingResponse
     import json, time
+    import time as _time_mod
     from app.intent import classify_intent
     from app.ntes_client import get_train_running_status, format_live_status_for_llm
     from app.pnr_client import get_pnr_status, format_pnr_status_for_llm
@@ -644,7 +641,7 @@ async def ask_question_smart(request: QuestionRequest, raw_request: Request):
                 return
 
 
-            # Response cache check (Phase 6B) â€” serve cached STATIC answers instantly
+            # Response cache check (Phase 6B) - serve cached STATIC answers instantly
             cached = _get_cached_response(question)
             if cached:
                 logger.debug(f"[CACHE HIT] Serving cached response for: {question[:60]}")
@@ -654,13 +651,13 @@ async def ask_question_smart(request: QuestionRequest, raw_request: Request):
                 yield f"data: {json.dumps({'type': 'done', 'response_time_ms': elapsed_ms, 'cached': True})}\n\n"
                 return
 
-            # 1. Classify intent
+            # 1. Classify intent - railway queries (closed-domain guardrail)
 
             intent_res = classify_intent(question)
             intent = intent_res["intent"]
             train_no = intent_res["train_no"]
 
-            # Instant handling for off-topic non-railway queries (closed-domain guardrail)
+            # Instant handling for off-topic non-railway queries
             if intent == "OUT_OF_DOMAIN":
                 meta = {
                     "type": "meta",
@@ -677,8 +674,8 @@ async def ask_question_smart(request: QuestionRequest, raw_request: Request):
                 yield f"data: {json.dumps(meta)}\n\n"
 
                 refusal = (
-                    "âš ï¸ **This is a closed-domain assistant for Indian Railways only.**\n\n"
-                    "I can only assist with Indian Railways information â€” such as train schedules, "
+                    "[!] **This is a closed-domain assistant for Indian Railways only.**\n\n"
+                    "I can only assist with Indian Railways information - such as train schedules, "
                     "routes, live running status, PNR status, fares, luggage rules, or ticket cancellation policies.\n\n"
                     "Please ask a railway-related question!"
                 )
@@ -742,10 +739,10 @@ async def ask_question_smart(request: QuestionRequest, raw_request: Request):
                             _session_last_train[session_key] = retrieved_train
                     else:
                         warnings.append(f"PNR status fetch failed: {pnr_status.get('error')}")
-                        live_context = f"âš ï¸ LIVE PNR STATUS UNAVAILABLE: {pnr_status.get('error')}"
+                        live_context = f"[!] LIVE PNR STATUS UNAVAILABLE: {pnr_status.get('error')}"
                 except Exception as exc:
                     warnings.append(f"PNR status fetch failed due to error: {str(exc)}")
-                    live_context = f"âš ï¸ LIVE PNR STATUS UNAVAILABLE due to error: {str(exc)}"
+                    live_context = f"[!] LIVE PNR STATUS UNAVAILABLE due to error: {str(exc)}"
             else:
                 # Determine static retrieval
                 needs_static = (intent in ("STATIC", "HYBRID"))
@@ -788,7 +785,7 @@ async def ask_question_smart(request: QuestionRequest, raw_request: Request):
                 # Fallback if live status was needed but failed / was not found
                 if needs_live and not live_context:
                     live_context = (
-                        f"âš ï¸ LIVE RUNNING STATUS UNAVAILABLE for train {train_no or 'unknown'}.\n"
+                        f"[!] LIVE RUNNING STATUS UNAVAILABLE for train {train_no or 'unknown'}.\n"
                         "Please rely on static scheduled timetable database details only.\n"
                     )
 
@@ -865,7 +862,7 @@ async def ask_question_smart(request: QuestionRequest, raw_request: Request):
             # Send done event
             elapsed_ms = round((time.time() - t0) * 1000, 1)
 
-            # Answer post-validation (Phase 3B) â€” flag potential hallucinations
+            # Answer post-validation (Phase 3B) - flag potential hallucinations
             validation_warnings = _validate_answer(full_answer, merged_context, train_no)
             if validation_warnings:
                 logger.info(f"[VALIDATION] Potential hallucination: {validation_warnings}")
@@ -914,6 +911,39 @@ async def ask_question_smart(request: QuestionRequest, raw_request: Request):
             logger.error(f"[STREAM] Error: {safe_err}")
             yield f"data: {json.dumps({'type': 'error', 'message': ERROR_MESSAGES['server_error']})}\n\n"
 
+            # -- Record failed query to MongoDB ------------------------------
+            # Classify error type so the dashboard can show failure breakdown
+            err_lower = safe_err.lower()
+            if any(k in err_lower for k in ("quota", "resource_exhausted", "rate limit", "429", "too many requests")):
+                error_type = "api_quota_exhausted"
+            elif any(k in err_lower for k in ("timeout", "timed out", "deadline")):
+                error_type = "timeout"
+            elif any(k in err_lower for k in ("connection", "network", "ssl", "socket", "unreachable")):
+                error_type = "network_error"
+            elif any(k in err_lower for k in ("key", "auth", "permission", "403", "401")):
+                error_type = "auth_error"
+            elif any(k in err_lower for k in ("rag", "chroma", "retriev", "embed")):
+                error_type = "rag_error"
+            else:
+                error_type = "server_error"
+
+            try:
+                from app import mongodb as _mongo
+                elapsed_ms_err = round((_time_mod.time() - t0) * 1000, 1) if 't0' in dir() else 0
+                _mongo.insert_query_log({
+                    "question": question if 'question' in dir() else "",
+                    "intent": intent if 'intent' in dir() else "UNKNOWN",
+                    "train_no": train_no if 'train_no' in dir() else None,
+                    "response_time_ms": elapsed_ms_err,
+                    "used_live_api": False,
+                    "error": True,
+                    "error_reason": safe_err[:300],
+                    "error_type": error_type,
+                    "hallucination_flag": False,
+                })
+            except Exception:
+                pass  # never block the error response
+
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
@@ -930,7 +960,7 @@ async def ask_with_file(
     question: str = Form(default=""),
 ):
     """
-    Multi-modal RAG endpoint â€” accepts an image (PNG/JPG/WEBP) or PDF file
+    Multi-modal RAG endpoint - accepts an image (PNG/JPG/WEBP) or PDF file
     along with an optional text question.
 
     Gemini Vision reads the file and generates an answer.
@@ -968,13 +998,13 @@ async def ask_with_file(
         t0 = time.time()
         import re, io, PIL.Image
 
-        # Configure Gemini (new SDK â€” google.genai)
+        # Configure Gemini (new SDK - google.genai)
         client = genai.Client(api_key=api_key)
         model_name = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
         effective_question = question.strip()
 
-        # â”€â”€ Step 1: Single Gemini call â€” describe + classify railway relevance â”€â”€
+        # - Step 1: Single Gemini call - describe + classify railway relevance -
         # Returns a structured block we parse without a second API call.
         classification_prompt = (
             "Analyze this file carefully and respond in EXACTLY this format (no extra text):\n\n"
@@ -1024,8 +1054,8 @@ async def ask_with_file(
         if not is_railway:
             logger.info("Non-railway content detected â€” skipping ChromaDB retrieval")
             answer_text = (
-                f"ðŸ“‹ **I can see:** {description}\n\n"
-                "âš ï¸ **This is a closed-domain assistant for Indian Railways only.**\n"
+                f"[File] **I can see:** {description}\n\n"
+                "[!] **This is a closed-domain assistant for Indian Railways only.**\n"
                 "The uploaded file doesn't appear to contain railway-related information. "
                 "Please upload a railway ticket, timetable, station screenshot, or fare chart â€” "
                 "or type a railway-related question directly."
@@ -1202,7 +1232,7 @@ async def get_station(station_code: str):
 
 
 
-# ── Admin Stats Endpoint (Phase 5B) ──────────────────────────────────────────
+# -- Admin Stats Endpoint (Phase 5B) ------------------------------------------
 
 @app.get("/admin/stats", tags=["Admin"])
 async def get_admin_stats():
@@ -1221,7 +1251,7 @@ async def get_admin_stats():
         return {"error": str(e)}
 
 
-# ── Feedback endpoints ────────────────────────────────────────────────────────
+# -- Feedback endpoints --------------------------------------------------------
 
 class FeedbackRequest(BaseModel):
     question: str = Field(..., max_length=500)
@@ -1229,30 +1259,44 @@ class FeedbackRequest(BaseModel):
     rating: str = Field(...)                            # "up" or "down"
     session_id: str = Field("anon")
     comment: str = Field("", max_length=500)            # optional user comment
+    comment_only: bool = Field(False)                   # True = update comment on existing record, don't insert new
 
 @app.post("/feedback", tags=["Feedback"])
 async def submit_feedback(req: FeedbackRequest):
     """
     Store user thumbs-up / thumbs-down rating for an answer.
+    YouTube-style: rating is counted immediately (comment_only=False).
+    When the user later submits a comment, comment_only=True updates the
+    existing record - no second count, no duplicate.
     Saved exclusively to MongoDB Atlas (Railway_Rag.feedback collection).
     """
     import time as _time
     if req.rating not in ("up", "down"):
         raise HTTPException(status_code=400, detail="rating must be 'up' or 'down'")
 
+    from app import mongodb as _mongo
+
+    if req.comment_only:
+        # Update the comment on the most recent matching record - don't insert
+        updated = _mongo.update_feedback_comment(
+            session_id=req.session_id,
+            question=req.question[:200],
+            rating=req.rating,
+            comment=req.comment[:500],
+        )
+        return {"status": "ok", "action": "comment_updated", "updated": updated, "stored_in_mongo": _mongo.is_online()}
+
     entry = {
         "ts": _time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "question": req.question[:200],
         "answer_preview": req.answer_preview[:300],
         "rating": req.rating,
-        "comment": req.comment[:500] if req.comment else "",
+        "comment": "",
         "session_id": req.session_id,
     }
-    # MongoDB Atlas — sole storage
-    from app import mongodb as _mongo
     _mongo.insert_feedback(entry)
 
-    return {"status": "ok", "rating": req.rating, "stored_in_mongo": _mongo.is_online()}
+    return {"status": "ok", "rating": req.rating, "action": "rated", "stored_in_mongo": _mongo.is_online()}
 
 
 @app.get("/feedback/summary", tags=["Feedback"])

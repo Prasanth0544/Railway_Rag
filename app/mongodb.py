@@ -109,6 +109,28 @@ def insert_feedback(doc: Dict[str, Any]) -> bool:
         return False
 
 
+def update_feedback_comment(session_id: str, question: str, rating: str, comment: str) -> bool:
+    """
+    YouTube-style comment update: finds the most recent feedback record for
+    this session + question + rating and patches its comment field.
+    Does NOT insert a new document, so rating counts remain accurate (1 per action).
+    Returns True if a record was found and updated, False otherwise.
+    """
+    if not is_online():
+        return False
+    try:
+        from pymongo import DESCENDING
+        result = _db[COL_FEEDBACK].find_one_and_update(
+            {"session_id": session_id, "question": question, "rating": rating},
+            {"$set": {"comment": comment, "commented_at": datetime.now(timezone.utc)}},
+            sort=[("ts", DESCENDING)],
+        )
+        return result is not None
+    except Exception as e:
+        log.error("[MongoDB] update_feedback_comment: %s", e)
+        return False
+
+
 def get_feedback_summary() -> Optional[Dict[str, Any]]:
     if not is_online():
         return None
@@ -175,12 +197,43 @@ def get_query_analytics() -> Optional[Dict[str, Any]]:
             ])
         ]
         errors  = col.count_documents({"error": True})
+        success = total - errors
         live    = col.count_documents({"used_live_api": True})
         live_ok = col.count_documents({"used_live_api": True, "error": {"$ne": True}})
+
+        # Error type breakdown (why queries failed)
+        error_type_breakdown = {
+            (d["_id"] or "server_error"): d["count"]
+            for d in col.aggregate([
+                {"$match": {"error": True, "error_type": {"$exists": True}}},
+                {"$group": {"_id": "$error_type", "count": {"$sum": 1}}},
+                {"$sort": {"count": -1}},
+            ])
+        }
+
+        # Recent failed queries (last 5) with reason
+        recent_failures = [
+            {
+                "question": d.get("question", "")[:100],
+                "error_type": d.get("error_type", "server_error"),
+                "error_reason": d.get("error_reason", "")[:120],
+                "ts": d.get("ts", ""),
+            }
+            for d in col.find(
+                {"error": True},
+                {"question": 1, "error_type": 1, "error_reason": 1, "ts": 1, "_id": 0}
+            ).sort("ts", DESCENDING).limit(5)
+        ]
+
         return {
             "total_queries": total,
+            "success_queries": success,
+            "failed_queries": errors,
+            "success_rate_pct": round(success / total * 100, 1) if total else 100,
             "avg_response_time_ms": avg_ms,
             "error_rate_pct": round(errors / total * 100, 1) if total else 0,
+            "error_type_breakdown": error_type_breakdown,
+            "recent_failures": recent_failures,
             "intent_distribution": intent_dist,
             "top_questions": top_qs,
             "live_api_used": live,
