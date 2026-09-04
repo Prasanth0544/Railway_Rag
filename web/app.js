@@ -1026,6 +1026,31 @@ async function submitQuestion(question) {
         }
         chatArea.scrollTop = chatArea.scrollHeight;
 
+      } else if (payload.type === 'quota_exhausted') {
+        // All API keys exhausted — show a prominent wait banner
+        const hrs = payload.hours_remaining || 24;
+        const hrsInt  = Math.floor(hrs);
+        const minsInt = Math.round((hrs - hrsInt) * 60);
+        answerContentEl.innerHTML = `
+          <div class="answer-card" style="border:2px solid #e8402a;background:rgba(232,64,42,0.07)">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+              <span style="font-size:1.5rem">⛔</span>
+              <strong style="color:#e8402a;font-size:1rem">All API Quota Exhausted</strong>
+            </div>
+            <p style="color:var(--ink);margin:0 0 10px 0;line-height:1.6">
+              All <strong>${_km_totalKeys || 20}</strong> Gemini API keys have reached their daily quota limit.
+              The system will automatically reset and retry after the cooldown period.
+            </p>
+            <div style="background:rgba(232,64,42,0.12);border-radius:10px;padding:10px 14px;display:inline-block">
+              <span style="font-size:0.85rem;color:var(--ink2)">Please try again in</span><br>
+              <strong style="font-size:1.4rem;color:#e8402a" id="quota-countdown-${msgId}">${hrsInt}h ${minsInt}m</strong>
+            </div>
+            <p style="font-size:0.78rem;color:var(--ink3);margin:12px 0 0 0">
+              Quota resets daily at midnight (IST). No action needed — just wait and try again.
+            </p>
+          </div>`;
+        hasInitializedBubble = true;
+
       } else if (payload.type === 'done') {
         // Done event: append statistics & finalize sources
         stats.responseTime = payload.response_time_ms;

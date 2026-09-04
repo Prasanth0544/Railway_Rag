@@ -331,15 +331,15 @@ HUMAN_PROMPT = "{question}"
 # LLM FACTORY — Gemini, LM Studio, or OpenRouter
 # ─────────────────────────────────────────────
 
-def get_llm():
+def get_llm(api_key: str = None):
     """
     Return the configured LLM.
 
-    LLM_PROVIDER=gemini      → ChatGoogleGenerativeAI (gemini-3.6-flash)
-    LLM_PROVIDER=lmstudio    → ChatOpenAI pointing at http://localhost:1234
-    LLM_PROVIDER=openrouter  → ChatOpenAI pointing at https://openrouter.ai/api/v1
-                               Uses OPENROUTER_API_KEY and OPENROUTER_MODEL (default: stealth/ox-alpha)
+    LLM_PROVIDER=gemini      -> ChatGoogleGenerativeAI (gemini-3.6-flash)
+    LLM_PROVIDER=lmstudio    -> ChatOpenAI pointing at http://localhost:1234
+    LLM_PROVIDER=openrouter  -> ChatOpenAI pointing at https://openrouter.ai/api/v1
 
+    api_key: if provided, overrides GOOGLE_API_KEY from env (used by key rotation manager).
     Embeddings always use Gemini gemini-embedding-001 regardless of this setting.
     """
     provider = os.getenv("LLM_PROVIDER", "gemini").lower().strip()
@@ -360,16 +360,16 @@ def get_llm():
 
     elif provider == "openrouter":
         from langchain_openai import ChatOpenAI
-        api_key    = os.getenv("OPENROUTER_API_KEY", "")
+        or_key     = os.getenv("OPENROUTER_API_KEY", "")
         model_name = os.getenv("OPENROUTER_MODEL", "stealth/ox-alpha")
 
-        if not api_key:
+        if not or_key:
             raise RuntimeError("OPENROUTER_API_KEY is not set. Cannot use LLM_PROVIDER=openrouter.")
 
         logger.info(f"🌐  LLM: OpenRouter ({model_name})")
         return ChatOpenAI(
             base_url="https://openrouter.ai/api/v1",
-            api_key=api_key,
+            api_key=or_key,
             model=model_name,
             temperature=0.3,
             max_tokens=8192,
@@ -381,16 +381,17 @@ def get_llm():
 
     else:  # Default: Gemini
         from langchain_google_genai import ChatGoogleGenerativeAI
-        api_key    = os.getenv("GOOGLE_API_KEY", "")
+        # Use key from rotation manager if provided, else fall back to env var
+        gemini_key = api_key or os.getenv("GOOGLE_API_KEY", "")
         model_name = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
-
-        logger.info(f"☁️  LLM: Google Gemini ({model_name})")
+        logger.info(f"LLM: Google Gemini ({model_name})")
         return ChatGoogleGenerativeAI(
             model=model_name,
-            google_api_key=api_key,
+            google_api_key=gemini_key,
             temperature=0.3,
-            max_output_tokens=8192,       # 2048 was too small for full 65-80 stop schedules
+            max_output_tokens=8192,
         )
+
 
 
 import re as _re

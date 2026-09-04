@@ -617,6 +617,7 @@ async def ask_question_smart(request: QuestionRequest, raw_request: Request):
     from app.intent import classify_intent
     from app.ntes_client import get_train_running_status, format_live_status_for_llm
     from app.pnr_client import get_pnr_status, format_pnr_status_for_llm
+    from app import key_manager as _km
 
     try:
         _ensure_rag_chain()
@@ -840,13 +841,79 @@ async def ask_question_smart(request: QuestionRequest, raw_request: Request):
                 ("system", SYSTEM_PROMPT),
                 ("human", HUMAN_PROMPT),
             ])
-            chain = prompt | rag_chain.llm
+
+            # ── Key rotation: check exhaustion, then stream with fallback ──────────
+            api_exhausted, hrs_left = _km.is_exhausted()
+            if api_exhausted:
+                hrs_int  = int(hrs_left)
+                mins_int = int((hrs_left - hrs_int) * 60)
+                wait_msg = (
+                    f"[QUOTA EXHAUSTED] All {_km._NUM_KEYS} Gemini API keys have reached their "
+                    f"daily quota limit.\n\n"
+                    f"Please try again in **{hrs_int}h {mins_int}m**. "
+                    f"The system will automatically reset and resume after {hrs_int} hour(s)."
+                )
+                yield f"data: {json.dumps({'type': 'quota_exhausted', 'hours_remaining': hrs_left, 'token': wait_msg})}\n\n"
+                elapsed_ms = round((time.time() - t0) * 1000, 1)
+                yield f"data: {json.dumps({'type': 'done', 'response_time_ms': elapsed_ms})}\n\n"
+                return
 
             full_answer = ""
-            async for chunk in chain.astream({"context": merged_context, "question": question}):
-                token = extract_token_text(chunk)
-                full_answer += token
-                yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
+            _quota_retried = False
+            while True:
+                active_key, key_idx = _km.get_active_key()
+                if active_key is None:
+                    # Just became exhausted during this request
+                    yield f"data: {json.dumps({'type': 'quota_exhausted', 'hours_remaining': _km._COOLDOWN_HOURS, 'token': '[QUOTA EXHAUSTED] All API keys exhausted. Please try again in 24 hours.'})}\n\n"
+                    elapsed_ms = round((time.time() - t0) * 1000, 1)
+                    yield f"data: {json.dumps({'type': 'done', 'response_time_ms': elapsed_ms})}\n\n"
+                    return
+
+                from app.rag import get_llm as _get_llm
+                try:
+                    # Use active rotated key for this request
+                    rotated_llm = _get_llm(api_key=active_key)
+                    chain = prompt | rotated_llm
+                    full_answer = ""
+                    async for chunk in chain.astream({"context": merged_context, "question": question}):
+                        token = extract_token_text(chunk)
+                        full_answer += token
+                        yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
+                    # Success
+                    _km.report_success(key_idx)
+                    break
+                except Exception as _llm_err:
+                    _err_str = str(_llm_err).lower()
+                    _is_quota = any(k in _err_str for k in ("quota", "resource_exhausted", "429", "rate limit", "too many requests"))
+                    if _is_quota and not _quota_retried:
+                        _quota_retried = True
+                        result = _km.report_quota_failure(key_idx)
+                        logger.warning(f"[KEY-ROTATE] Quota hit on key[{key_idx}], rotating to key[{result['new_key_index']}]")
+                        # Log to MongoDB
+                        try:
+                            from app import mongodb as _mongo
+                            _mongo.insert_query_log({
+                                "question": question,
+                                "intent": intent if 'intent' in dir() else "UNKNOWN",
+                                "train_no": train_no if 'train_no' in dir() else None,
+                                "response_time_ms": round((time.time() - t0) * 1000, 1),
+                                "used_live_api": False,
+                                "error": True,
+                                "error_type": "api_quota_exhausted",
+                                "error_reason": f"Key[{key_idx}] quota exhausted, rotating to key[{result['new_key_index']}]",
+                                "hallucination_flag": False,
+                            })
+                        except Exception:
+                            pass
+                        if result["exhausted"]:
+                            hrs = result["hours_remaining"]
+                            yield f"data: {json.dumps({'type': 'quota_exhausted', 'hours_remaining': hrs, 'token': f'[QUOTA EXHAUSTED] All API keys exhausted. Please try again in {int(hrs)}h.'})}\n\n"
+                            elapsed_ms = round((time.time() - t0) * 1000, 1)
+                            yield f"data: {json.dumps({'type': 'done', 'response_time_ms': elapsed_ms})}\n\n"
+                            return
+                        continue  # retry with new key
+                    else:
+                        raise  # non-quota error or already retried
 
             # Save this Q&A pair to conversation history
             if session_key not in _session_history:

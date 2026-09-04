@@ -17,9 +17,10 @@ from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError, Opera
 
 log = logging.getLogger("app.mongodb")
 
-DB_NAME      = "Railway_Rag"
-COL_QUERIES  = "query_logs"
-COL_FEEDBACK = "feedback"
+DB_NAME       = "Railway_Rag"
+COL_QUERIES   = "query_logs"
+COL_FEEDBACK  = "feedback"
+COL_KEY_STATE = "api_key_state"
 
 _client = None
 _db     = None
@@ -57,6 +58,7 @@ def _ensure_indexes():
         _db[COL_QUERIES].create_index([("question", ASCENDING)])
         _db[COL_FEEDBACK].create_index([("ts", DESCENDING)])
         _db[COL_FEEDBACK].create_index([("rating", ASCENDING)])
+        _db[COL_KEY_STATE].create_index([("_id", ASCENDING)], unique=True)
         log.info("[MongoDB] Indexes verified.")
     except Exception as e:
         log.warning("[MongoDB] Index warning: %s", e)
@@ -244,3 +246,37 @@ def get_query_analytics() -> Optional[Dict[str, Any]]:
     except Exception as e:
         log.error("[MongoDB] get_query_analytics: %s", e)
         return None
+
+
+# ── API Key State (for key rotation manager) ─────────────────────────────────
+_KEY_STATE_ID = "gemini_rotation"
+
+def get_key_state() -> Optional[Dict[str, Any]]:
+    """Read the current key rotation state from MongoDB."""
+    if not is_online():
+        return None
+    try:
+        doc = _db[COL_KEY_STATE].find_one({"_id": _KEY_STATE_ID})
+        if doc:
+            doc.pop("_id", None)
+            return doc
+        return None
+    except Exception as e:
+        log.error("[MongoDB] get_key_state: %s", e)
+        return None
+
+
+def update_key_state(patch: Dict[str, Any]) -> bool:
+    """Upsert the key rotation state document with the given fields."""
+    if not is_online():
+        return False
+    try:
+        _db[COL_KEY_STATE].update_one(
+            {"_id": _KEY_STATE_ID},
+            {"$set": patch},
+            upsert=True,
+        )
+        return True
+    except Exception as e:
+        log.error("[MongoDB] update_key_state: %s", e)
+        return False
