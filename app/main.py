@@ -219,10 +219,39 @@ def _warmup_rag_chain():
     try:
         logger.info("[warmup] Pre-loading RAG chain in background thread...")
         provider = os.getenv("LLM_PROVIDER", "gemini").lower()
-        api_key = os.getenv("GOOGLE_API_KEY", "")
-        if provider == "gemini" and (not api_key or api_key == "your-gemini-api-key-here"):
-            logger.error("[warmup] GOOGLE_API_KEY not set - RAG chain not loaded.")
-            return
+        if provider == "gemini":
+            from app import key_manager as _km
+            api_key, key_idx = _km.get_active_key()
+
+            # ── Auto-recovery: if exhausted state in MongoDB (e.g. from testing),
+            #    reset to key[0] so Render cold-starts always succeed.
+            if not api_key:
+                logger.warning("[warmup] Key manager returned no active key (exhausted state). "
+                               "Auto-resetting to key[0] for startup...")
+                _km._save_state({
+                    "current_key_index": 0,
+                    "quota_fail_count": 0,
+                    "exhausted_at": None,
+                    "key_fail_counts": {},
+                })
+                _km._ALL_KEYS = []
+                api_key, key_idx = _km.get_active_key()
+
+            # ── Last resort: try GOOGLE_API_KEY_00 directly from env
+            if not api_key:
+                api_key = os.getenv("GOOGLE_API_KEY_00") or os.getenv("GOOGLE_API_KEY", "")
+                key_idx = 0
+                if api_key:
+                    logger.warning("[warmup] Using GOOGLE_API_KEY_00 directly as fallback.")
+
+            if not api_key:
+                logger.error("[warmup] No Gemini API keys found in environment. "
+                             "Add GOOGLE_API_KEY_00 through _19 to your env vars.")
+                return
+
+            os.environ["GOOGLE_API_KEY"] = api_key
+            logger.info(f"[warmup] Using key[{key_idx}] for RAG chain init.")
+
         from app.rag import get_rag_chain
         with _rag_lock:
             rag_chain = get_rag_chain()
@@ -1316,6 +1345,42 @@ async def get_admin_stats():
         return stats or {"total_queries": 0, "message": "No data yet"}
     except Exception as e:
         return {"error": str(e)}
+
+
+@app.get("/api/key-status", tags=["Admin"])
+async def get_key_status():
+    """
+    Returns current API key rotation status:
+    - total keys loaded
+    - which key is active (index)
+    - total quota failure count
+    - whether all keys are exhausted
+    - hours remaining in cooldown
+    - per-key failure breakdown
+    """
+    from app import key_manager as _km
+    status = _km.get_status()
+    active_key, active_idx = _km.get_active_key()
+    status["active_key_index"] = active_idx
+    status["has_active_key"] = active_key is not None
+    return status
+
+
+@app.post("/api/debug/reset-keys", tags=["Debug"])
+async def debug_reset_keys():
+    """[DEBUG] Reset all key rotation counters back to key #0 with count=0."""
+    if not os.getenv("DEBUG_MODE", "").lower() in ("1", "true", "yes"):
+        raise HTTPException(status_code=403, detail="Debug endpoints disabled in production. Set DEBUG_MODE=true to enable.")
+    from app import key_manager as _km
+    _km._save_state({
+        "current_key_index": 0,
+        "quota_fail_count": 0,
+        "exhausted_at": None,
+        "key_fail_counts": {},
+    })
+    _km._ALL_KEYS = []
+    status = _km.get_status()
+    return {"reset": True, "state": status}
 
 
 # -- Feedback endpoints --------------------------------------------------------
